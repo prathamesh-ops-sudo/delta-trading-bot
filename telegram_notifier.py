@@ -95,6 +95,10 @@ class TelegramNotifier:
                     latest_update = updates[-1]
                     if 'message' in latest_update:
                         chat_id = str(latest_update['message']['chat']['id'])
+
+                        # Send confirmation message
+                        self._send_chat_id_confirmation(chat_id)
+
                         return chat_id
 
             return None
@@ -102,6 +106,52 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"Failed to detect chat ID: {e}")
             return None
+
+    def _send_chat_id_confirmation(self, chat_id: str) -> bool:
+        """Send confirmation message when chat ID is detected"""
+        try:
+            url = f"{self.base_url}/sendMessage"
+            message = f"""
+✅ <b>Chat ID Detected Successfully!</b>
+
+Your trading bot is now connected to this chat.
+
+<b>Chat ID:</b> <code>{chat_id}</code>
+
+<b>Configuration:</b>
+• Symbol: {Config.SYMBOL}
+• Timeframe: {Config.TIMEFRAME}
+• Max Leverage: {Config.MAX_LEVERAGE}x
+• Signal Threshold: {Config.SIGNAL_THRESHOLD:.0%}
+
+<b>What's Next:</b>
+1. Bot will send trade signals here
+2. You'll receive execution notifications
+3. Daily performance summaries at midnight
+
+<b>Optional:</b> Add this to config.py:
+<code>TELEGRAM_CHAT_ID = "{chat_id}"</code>
+
+✅ You're all set! The bot is monitoring markets...
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+
+            logger.info(f"Chat ID confirmation sent to {chat_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to send confirmation: {e}")
+            return False
 
     def notify_trade_signal(self, signal: Dict, market_data: Dict) -> bool:
         """Notify about a new trade signal"""
