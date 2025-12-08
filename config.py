@@ -8,9 +8,13 @@ class Config:
     """Centralized configuration for the trading system"""
 
     # Delta Exchange API Configuration
+    # DEMO ENVIRONMENT (for testing)
     DELTA_API_KEY = "X0hXz0ovm7TNahwksM7z2YzRpoCOXR"
     DELTA_API_SECRET = "UelavyXzxDVve0hqoBhTBUQasWL3FEdApbgEu9FW98SlOWAWbqP4XzIB0pUP"
-    DELTA_BASE_URL = "https://api.india.delta.exchange"
+    DELTA_BASE_URL = "https://api.delta.exchange"  # Use demo for testing
+
+    # For PRODUCTION (uncomment when ready):
+    # DELTA_BASE_URL = "https://api.india.delta.exchange"
 
     # Trading Configuration
     SYMBOL = "BTCUSD"  # Main trading pair

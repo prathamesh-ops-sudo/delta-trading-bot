@@ -96,23 +96,48 @@ class DeltaExchangeAPI:
         Get historical candlestick data
 
         Args:
-            symbol: Trading pair symbol
-            resolution: Candle resolution (1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 1d, 1w)
-            count: Number of candles to fetch
-            start: Start timestamp (optional)
-            end: End timestamp (optional)
+            symbol: Trading pair symbol (e.g., "BTCUSD")
+            resolution: Candle resolution (1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 1d, 1w, 1M)
+            count: Number of candles to fetch (max 2000)
+            start: Start timestamp in seconds (optional)
+            end: End timestamp in seconds (optional)
         """
+        # Delta Exchange uses product_id or symbol, need to handle both
+        # First, try to get the product details to get the correct symbol format
+        try:
+            product = self.get_product(symbol)
+            product_symbol = product.get("result", {}).get("symbol", symbol)
+        except:
+            product_symbol = symbol
+
         endpoint = "/v2/history/candles"
         params = {
-            "symbol": symbol,
             "resolution": resolution,
-            "count": count
         }
 
-        if start:
+        # Use symbol instead of count for Delta Exchange API
+        # Delta Exchange API expects: symbol, resolution, start, end
+        if start and end:
+            params["symbol"] = product_symbol
             params["start"] = start
-        if end:
             params["end"] = end
+        else:
+            # If no start/end, calculate from count
+            import time
+            # Resolution to seconds mapping
+            resolution_seconds = {
+                "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+                "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600,
+                "1d": 86400, "1w": 604800, "1M": 2592000
+            }
+
+            seconds = resolution_seconds.get(resolution, 300)
+            end_time = int(time.time())
+            start_time = end_time - (count * seconds)
+
+            params["symbol"] = product_symbol
+            params["start"] = start_time
+            params["end"] = end_time
 
         response = self._make_request("GET", endpoint, params=params, authenticated=False)
         return response.get("result", [])
