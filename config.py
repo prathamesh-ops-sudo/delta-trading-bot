@@ -11,7 +11,7 @@ class Config:
     # DEMO ENVIRONMENT (for testing)
     DELTA_API_KEY = "X0hXz0ovm7TNahwksM7z2YzRpoCOXR"
     DELTA_API_SECRET = "UelavyXzxDVve0hqoBhTBUQasWL3FEdApbgEu9FW98SlOWAWbqP4XzIB0pUP"
-    DELTA_BASE_URL = "https://testnet-api.delta.exchange"  # Testnet/Demo environment
+    DELTA_BASE_URL = "https://api.demo.delta.exchange"  # DEMO environment
 
     # For PRODUCTION (uncomment when ready):
     # DELTA_BASE_URL = "https://api.india.delta.exchange"
