@@ -1,0 +1,28 @@
+# Core Trading Bot Requirements
+
+# Data Processing
+numpy==1.24.3
+pandas==2.0.3
+scipy==1.11.1
+
+# Machine Learning
+scikit-learn==1.3.0
+tensorflow==2.13.0
+keras==2.13.1
+
+# Technical Analysis
+TA-Lib==0.4.28
+
+# API and Networking
+requests==2.31.0
+urllib3==2.0.4
+
+# Scheduling
+schedule==1.2.0
+
+# Configuration
+python-dotenv==1.0.0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
