@@ -41,6 +41,14 @@ class FeatureEngine:
             if old_col in df.columns:
                 df[new_col] = pd.to_numeric(df[old_col], errors='coerce')
 
+        # Ensure all OHLCV columns are float64 (required by TA-Lib)
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col in df.columns:
+                df[col] = df[col].astype('float64')
+
+        # Drop any rows with NaN values in OHLCV columns
+        df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
+
         df = df.sort_values('timestamp').reset_index(drop=True)
         return df
 
