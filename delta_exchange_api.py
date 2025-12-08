@@ -102,42 +102,33 @@ class DeltaExchangeAPI:
             start: Start timestamp in seconds (optional)
             end: End timestamp in seconds (optional)
         """
-        # Delta Exchange uses product_id or symbol, need to handle both
-        # First, try to get the product details to get the correct symbol format
-        try:
-            product = self.get_product(symbol)
-            product_symbol = product.get("result", {}).get("symbol", symbol)
-        except:
-            product_symbol = symbol
+        import time
 
         endpoint = "/v2/history/candles"
-        params = {
-            "resolution": resolution,
+
+        # Resolution to seconds mapping
+        resolution_seconds = {
+            "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+            "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600,
+            "1d": 86400, "1w": 604800, "1M": 2592000
         }
 
-        # Use symbol instead of count for Delta Exchange API
-        # Delta Exchange API expects: symbol, resolution, start, end
-        if start and end:
-            params["symbol"] = product_symbol
-            params["start"] = start
-            params["end"] = end
-        else:
-            # If no start/end, calculate from count
-            import time
-            # Resolution to seconds mapping
-            resolution_seconds = {
-                "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-                "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600,
-                "1d": 86400, "1w": 604800, "1M": 2592000
-            }
-
+        # Delta Exchange REQUIRES start and end timestamps (count is not supported)
+        if start is None or end is None:
+            # Calculate from count
             seconds = resolution_seconds.get(resolution, 300)
             end_time = int(time.time())
             start_time = end_time - (count * seconds)
+        else:
+            start_time = start
+            end_time = end
 
-            params["symbol"] = product_symbol
-            params["start"] = start_time
-            params["end"] = end_time
+        params = {
+            "symbol": symbol,
+            "resolution": resolution,
+            "start": start_time,
+            "end": end_time
+        }
 
         response = self._make_request("GET", endpoint, params=params, authenticated=False)
         return response.get("result", [])
