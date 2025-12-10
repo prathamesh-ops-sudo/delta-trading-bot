@@ -114,20 +114,20 @@ class TelegramNotifier:
             message = f"""
 ✅ <b>Chat ID Detected Successfully!</b>
 
-Your trading bot is now connected to this chat.
+Your alert bot is now connected to this chat.
 
 <b>Chat ID:</b> <code>{chat_id}</code>
 
 <b>Configuration:</b>
 • Symbol: {Config.SYMBOL}
-• Timeframe: {Config.TIMEFRAME}
-• Max Leverage: {Config.MAX_LEVERAGE}x
-• Signal Threshold: {Config.SIGNAL_THRESHOLD:.0%}
+• Interval: {Config.INTERVAL}
+• Buy Signal Threshold: {Config.BUY_SIGNAL_THRESHOLD:.0%}
+• Sell Signal Threshold: {Config.SELL_SIGNAL_THRESHOLD:.0%}
 
 <b>What's Next:</b>
-1. Bot will send trade signals here
-2. You'll receive execution notifications
-3. Daily performance summaries at midnight
+1. Bot will send BUY/SELL signals here
+2. You'll receive price movement alerts
+3. RSI oversold/overbought notifications
 
 <b>Optional:</b> Add this to config.py:
 <code>TELEGRAM_CHAT_ID = "{chat_id}"</code>

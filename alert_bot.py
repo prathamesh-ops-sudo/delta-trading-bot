@@ -59,9 +59,15 @@ class AlertBot:
         if not self.data_fetcher.test_connection():
             raise ConnectionError("Failed to connect to Binance API")
 
-        # Test Telegram connection
-        if not self.telegram.test_connection():
-            raise ConnectionError("Failed to connect to Telegram")
+        # Test Telegram connection (optional - will enable when chat ID detected)
+        if self.telegram.enabled:
+            if self.telegram.test_connection():
+                logger.info("✓ Telegram connected successfully")
+            else:
+                logger.warning("Telegram test message failed, but continuing...")
+        else:
+            logger.warning("⚠️  Telegram not configured - alerts will only be logged")
+            logger.warning("   Send /start to your bot on Telegram to enable notifications")
 
         # Load or train models
         if self.signal_generator.models_exist():
@@ -100,6 +106,10 @@ class AlertBot:
 
     def _send_startup_message(self):
         """Send startup notification"""
+        if not self.telegram.enabled:
+            logger.info("Skipping startup message - Telegram not configured")
+            return
+
         message = f"""
 🤖 <b>Alert Bot Started</b>
 
@@ -113,6 +123,17 @@ class AlertBot:
 🟢 System ready and monitoring markets...
 """
         self.telegram.send_message(message)
+
+    def _check_telegram_connection(self):
+        """Periodically check if Telegram chat ID became available"""
+        if not self.telegram.enabled and self.telegram.bot_token:
+            # Try to detect chat ID
+            detected_chat_id = self.telegram._detect_chat_id()
+            if detected_chat_id:
+                self.telegram.chat_id = detected_chat_id
+                self.telegram.enabled = True
+                logger.info(f"✓ Telegram chat ID detected: {detected_chat_id}")
+                self._send_startup_message()
 
     def _should_send_alert(self, signal: str) -> bool:
         """Check if alert should be sent based on frequency limits"""
@@ -310,6 +331,10 @@ This could indicate a potential selling opportunity.
                 cycle_count += 1
                 logger.info(f"=== Cycle #{cycle_count} ===")
 
+                # Check if Telegram became available
+                if cycle_count % 10 == 0:  # Check every 10 cycles
+                    self._check_telegram_connection()
+
                 success = self.run_once()
 
                 if not success:
@@ -329,10 +354,11 @@ This could indicate a potential selling opportunity.
                 time.sleep(60)  # Wait 1 minute before retrying
 
         # Send shutdown message
-        try:
-            self.telegram.send_message("🔴 <b>Alert Bot Stopped</b>\n\nBot has been shut down.")
-        except:
-            pass
+        if self.telegram.enabled:
+            try:
+                self.telegram.send_message("🔴 <b>Alert Bot Stopped</b>\n\nBot has been shut down.")
+            except:
+                pass
 
         logger.info("Alert Bot stopped")
 
