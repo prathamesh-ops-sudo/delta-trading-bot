@@ -110,10 +110,11 @@ class AlertBot:
             logger.info("Skipping startup message - Telegram not configured")
             return
 
+        symbols_str = ", ".join(Config.SYMBOLS)
         message = f"""
 🤖 <b>Alert Bot Started</b>
 
-📊 <b>Monitoring:</b> {Config.SYMBOL}
+📊 <b>Monitoring:</b> {symbols_str}
 ⏰ <b>Interval:</b> {Config.INTERVAL}
 🎯 <b>Signal Threshold:</b> {Config.SIGNAL_THRESHOLD:.0%}
 📈 <b>Buy Alert:</b> {Config.BUY_SIGNAL_THRESHOLD:.0%}+
@@ -189,12 +190,15 @@ class AlertBot:
             emoji = Config.ALERT_EMOJI['neutral']
             strength = "NEUTRAL"
 
+        # Get symbol
+        symbol = signal_data.get('symbol', Config.SYMBOL)
+
         # Build message with entry/exit levels
         if signal != 'NEUTRAL':
             message = f"""
 {emoji} <b>{strength} SIGNAL</b>
 
-{Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {Config.SYMBOL}
+{Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {symbol}
 {Config.ALERT_EMOJI['money']} <b>Entry Price:</b> ${signal_data['entry_price']:,.2f}
 📊 <b>Confidence:</b> {confidence:.1%}
 
@@ -223,7 +227,7 @@ class AlertBot:
             message = f"""
 {emoji} <b>{strength} SIGNAL</b>
 
-{Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {Config.SYMBOL}
+{Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {symbol}
 {Config.ALERT_EMOJI['money']} <b>Price:</b> ${price:,.2f}
 📊 <b>Confidence:</b> {confidence:.1%}
 
@@ -243,7 +247,7 @@ class AlertBot:
 
         logger.info(f"✓ Sent {signal} alert (#{self.alerts_today} today)")
 
-    def _check_price_movements(self, df):
+    def _check_price_movements(self, df, symbol: str):
         """Check for significant price movements"""
         if not Config.ENABLE_PRICE_ALERTS:
             return
@@ -261,16 +265,16 @@ class AlertBot:
                     message = f"""
 {Config.ALERT_EMOJI['warning']} <b>Price Alert</b>
 
-{direction} <b>{Config.SYMBOL}</b> moved <b>{change_1h:+.2f}%</b> in 1 hour
+{direction} <b>{symbol}</b> moved <b>{change_1h:+.2f}%</b> in 1 hour
 
 <b>Current Price:</b> ${current_price:,.2f}
 <b>1h Ago:</b> ${price_1h_ago:,.2f}
 """
                     self.telegram.send_message(message)
-                    logger.info(f"Sent 1-hour price movement alert: {change_1h:+.2f}%")
+                    logger.info(f"Sent {symbol} 1-hour price movement alert: {change_1h:+.2f}%")
 
         except Exception as e:
-            logger.error(f"Error checking price movements: {e}")
+            logger.error(f"Error checking price movements for {symbol}: {e}")
 
     def _check_indicator_alerts(self, signal_data: Dict):
         """Check for extreme indicator values"""
@@ -279,13 +283,14 @@ class AlertBot:
 
         try:
             rsi = signal_data['rsi_14']
+            symbol = signal_data.get('symbol', Config.SYMBOL)
 
             # RSI oversold
             if rsi < Config.RSI_OVERSOLD:
                 message = f"""
 {Config.ALERT_EMOJI['info']} <b>RSI Alert</b>
 
-📉 <b>{Config.SYMBOL}</b> is <b>OVERSOLD</b>
+📉 <b>{symbol}</b> is <b>OVERSOLD</b>
 
 <b>RSI(14):</b> {rsi:.1f}
 <b>Price:</b> ${signal_data['price']:,.2f}
@@ -300,7 +305,7 @@ This could indicate a potential buying opportunity.
                 message = f"""
 {Config.ALERT_EMOJI['info']} <b>RSI Alert</b>
 
-📈 <b>{Config.SYMBOL}</b> is <b>OVERBOUGHT</b>
+📈 <b>{symbol}</b> is <b>OVERBOUGHT</b>
 
 <b>RSI(14):</b> {rsi:.1f}
 <b>Price:</b> ${signal_data['price']:,.2f}
@@ -314,31 +319,42 @@ This could indicate a potential selling opportunity.
             logger.error(f"Error checking indicator alerts: {e}")
 
     def run_once(self) -> bool:
-        """Run one cycle of market analysis"""
+        """Run one cycle of market analysis for all symbols"""
         try:
-            # Fetch latest data
-            logger.info(f"Fetching latest {Config.SYMBOL} data...")
-            klines = self.data_fetcher.get_klines(Config.SYMBOL, Config.INTERVAL, Config.CANDLES_TO_FETCH)
-            df = self.data_fetcher.klines_to_dataframe(klines)
+            all_success = True
 
-            # Calculate features
-            df = self.feature_engine.prepare_data_from_binance(df)
-            df = self.feature_engine.calculate_all_features(df)
+            # Analyze each symbol
+            for symbol in Config.SYMBOLS:
+                try:
+                    logger.info(f"Analyzing {symbol}...")
 
-            # Generate signal
-            signal_data = self.signal_generator.predict(df)
+                    # Fetch latest data
+                    klines = self.data_fetcher.get_klines(symbol, Config.INTERVAL, Config.CANDLES_TO_FETCH)
+                    df = self.data_fetcher.klines_to_dataframe(klines)
 
-            # Check if alert should be sent
-            if self._should_send_alert(signal_data['signal']):
-                if signal_data['signal'] != 'NEUTRAL':
-                    self._send_signal_alert(signal_data)
-                    # Check for extreme indicators
-                    self._check_indicator_alerts(signal_data)
+                    # Calculate features
+                    df = self.feature_engine.prepare_data_from_binance(df)
+                    df = self.feature_engine.calculate_all_features(df)
 
-            # Check price movements
-            self._check_price_movements(df)
+                    # Generate signal
+                    signal_data = self.signal_generator.predict(df)
+                    signal_data['symbol'] = symbol  # Add symbol to signal data
 
-            return True
+                    # Check if alert should be sent
+                    if self._should_send_alert(signal_data['signal']):
+                        if signal_data['signal'] != 'NEUTRAL':
+                            self._send_signal_alert(signal_data)
+                            # Check for extreme indicators
+                            self._check_indicator_alerts(signal_data)
+
+                    # Check price movements
+                    self._check_price_movements(df, symbol)
+
+                except Exception as e:
+                    logger.error(f"Error analyzing {symbol}: {e}")
+                    all_success = False
+
+            return all_success
 
         except Exception as e:
             logger.error(f"Error in run cycle: {e}", exc_info=True)

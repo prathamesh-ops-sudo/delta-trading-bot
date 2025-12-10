@@ -10,8 +10,12 @@ class Config:
     # ============================================================
     # DATA SOURCE CONFIGURATION (Binance Public API - No Auth)
     # ============================================================
-    SYMBOL = "BTCUSDT"  # Trading pair to monitor
+    # Multiple symbols to monitor
+    SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]  # 4 trading pairs
     INTERVAL = "5m"     # Kline interval: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
+
+    # Legacy single symbol support (for backward compatibility)
+    SYMBOL = SYMBOLS[0]
 
     # ============================================================
     # TELEGRAM CONFIGURATION
