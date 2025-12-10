@@ -234,13 +234,58 @@ class SignalGenerator:
         # Get current market data
         latest = df.iloc[-1]
 
+        # Calculate entry, stop-loss, and take-profit levels
+        current_price = float(latest['close'])
+        atr = float(latest.get('atr_14', current_price * 0.02))  # Use 2% if ATR not available
+
+        if signal == 'BUY':
+            entry_price = current_price
+            stop_loss = current_price - (2 * atr)  # 2x ATR below entry
+            take_profit_1 = current_price + (1.5 * atr)  # 1.5x ATR (1.5:1 R/R)
+            take_profit_2 = current_price + (3 * atr)    # 3x ATR (3:1 R/R)
+            take_profit_3 = current_price + (5 * atr)    # 5x ATR (5:1 R/R)
+
+        elif signal == 'SELL':
+            entry_price = current_price
+            stop_loss = current_price + (2 * atr)  # 2x ATR above entry
+            take_profit_1 = current_price - (1.5 * atr)  # 1.5x ATR (1.5:1 R/R)
+            take_profit_2 = current_price - (3 * atr)    # 3x ATR (3:1 R/R)
+            take_profit_3 = current_price - (5 * atr)    # 5x ATR (5:1 R/R)
+        else:
+            entry_price = current_price
+            stop_loss = 0
+            take_profit_1 = 0
+            take_profit_2 = 0
+            take_profit_3 = 0
+
+        # Calculate risk/reward ratios
+        if signal != 'NEUTRAL' and stop_loss != 0:
+            risk = abs(entry_price - stop_loss)
+            reward_1 = abs(take_profit_1 - entry_price)
+            reward_2 = abs(take_profit_2 - entry_price)
+            reward_3 = abs(take_profit_3 - entry_price)
+            risk_reward_1 = reward_1 / risk if risk > 0 else 0
+            risk_reward_2 = reward_2 / risk if risk > 0 else 0
+            risk_reward_3 = reward_3 / risk if risk > 0 else 0
+        else:
+            risk_reward_1 = risk_reward_2 = risk_reward_3 = 0
+
         result = {
             'signal': signal,
-            'confidence': float(signal_confidence),  # Now shows actual signal strength
-            'ensemble_score': float(ensemble_score),  # Raw score (0-1)
+            'confidence': float(signal_confidence),
+            'ensemble_score': float(ensemble_score),
             'lstm_score': float(lstm_pred),
             'rf_score': float(rf_pred_proba),
-            'price': float(latest['close']),
+            'price': float(current_price),
+            'entry_price': float(entry_price),
+            'stop_loss': float(stop_loss),
+            'take_profit_1': float(take_profit_1),
+            'take_profit_2': float(take_profit_2),
+            'take_profit_3': float(take_profit_3),
+            'risk_reward_1': float(risk_reward_1),
+            'risk_reward_2': float(risk_reward_2),
+            'risk_reward_3': float(risk_reward_3),
+            'atr': float(atr),
             'timestamp': latest['timestamp'],
             'rsi_14': float(latest.get('rsi_14', 0)),
             'macd_hist': float(latest.get('macd_hist', 0)),

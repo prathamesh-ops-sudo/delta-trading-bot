@@ -179,7 +179,7 @@ class AlertBot:
                 emoji = Config.ALERT_EMOJI['buy']
                 strength = "BUY"
         elif signal == 'SELL':
-            if confidence <= 0.15:
+            if confidence >= 0.85:
                 emoji = Config.ALERT_EMOJI['strong_sell']
                 strength = "STRONG SELL"
             else:
@@ -189,8 +189,38 @@ class AlertBot:
             emoji = Config.ALERT_EMOJI['neutral']
             strength = "NEUTRAL"
 
-        # Build message
-        message = f"""
+        # Build message with entry/exit levels
+        if signal != 'NEUTRAL':
+            message = f"""
+{emoji} <b>{strength} SIGNAL</b>
+
+{Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {Config.SYMBOL}
+{Config.ALERT_EMOJI['money']} <b>Entry Price:</b> ${signal_data['entry_price']:,.2f}
+📊 <b>Confidence:</b> {confidence:.1%}
+
+<b>📍 Entry & Exit Levels:</b>
+🎯 <b>Entry:</b> ${signal_data['entry_price']:,.2f}
+🛑 <b>Stop Loss:</b> ${signal_data['stop_loss']:,.2f}
+
+<b>Take Profit Targets:</b>
+• <b>TP1:</b> ${signal_data['take_profit_1']:,.2f} (R/R: {signal_data['risk_reward_1']:.1f}:1)
+• <b>TP2:</b> ${signal_data['take_profit_2']:,.2f} (R/R: {signal_data['risk_reward_2']:.1f}:1)
+• <b>TP3:</b> ${signal_data['take_profit_3']:,.2f} (R/R: {signal_data['risk_reward_3']:.1f}:1)
+
+<b>📊 Technical Indicators:</b>
+• RSI(14): {signal_data['rsi_14']:.1f}
+• MACD Histogram: {signal_data['macd_hist']:.4f}
+• ATR(14): ${signal_data['atr']:,.2f}
+
+<b>🤖 Model Scores:</b>
+• LSTM: {signal_data['lstm_score']:.1%}
+• Random Forest: {signal_data['rf_score']:.1%}
+• Ensemble: {signal_data['ensemble_score']:.1%}
+
+⏰ <b>Time:</b> {timestamp.strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        else:
+            message = f"""
 {emoji} <b>{strength} SIGNAL</b>
 
 {Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {Config.SYMBOL}
@@ -200,11 +230,6 @@ class AlertBot:
 <b>Technical Indicators:</b>
 • RSI(14): {signal_data['rsi_14']:.1f}
 • MACD Histogram: {signal_data['macd_hist']:.4f}
-• BB Position: {signal_data['bb_position']:.2f}
-
-<b>Model Scores:</b>
-• LSTM: {signal_data['lstm_score']:.1%}
-• Random Forest: {signal_data['rf_score']:.1%}
 
 ⏰ <b>Time:</b> {timestamp.strftime('%Y-%m-%d %H:%M:%S')}
 """
