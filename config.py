@@ -1,73 +1,137 @@
 """
-Configuration Management for Crypto Alert System
+Configuration Management for Professional Crypto Alert System
+Built like a veteran trader - Warren Buffett + BlackRock Aladdin style
 """
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 class Config:
-    """Centralized configuration for the alerting system"""
+    """Centralized configuration for professional trading alerts"""
 
     # ============================================================
-    # DATA SOURCE CONFIGURATION (Binance Public API - No Auth)
+    # DATA SOURCE - Using Binance for data (mirrors Delta pricing)
     # ============================================================
-    # Multiple symbols to monitor
-    SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]  # 4 trading pairs
-    INTERVAL = "5m"     # Kline interval: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
+    # Delta Exchange symbols mapping
+    DELTA_SYMBOLS = {
+        "BTCUSD": "BTCUSDT",    # Delta uses BTCUSD, Binance has BTCUSDT
+        "ETHUSD": "ETHUSDT",    # Delta uses ETHUSD, Binance has ETHUSDT
+        "BNBUSD": "BNBUSDT",    # Delta uses BNBUSD, Binance has BNBUSDT
+        "SOLUSD": "SOLUSDT"     # Delta uses SOLUSD, Binance has SOLUSDT
+    }
 
-    # Legacy single symbol support (for backward compatibility)
+    # Symbols to monitor (Delta Exchange format)
+    SYMBOLS = list(DELTA_SYMBOLS.keys())  # ["BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD"]
+
+    # Binance equivalents for data fetching
+    BINANCE_SYMBOLS = list(DELTA_SYMBOLS.values())
+
+    # Timeframes for multi-timeframe analysis (like professional traders)
+    PRIMARY_TIMEFRAME = "15m"    # Main trading timeframe
+    HIGHER_TIMEFRAME = "1h"      # For trend context
+    LOWER_TIMEFRAME = "5m"       # For precise entry
+
+    INTERVAL = PRIMARY_TIMEFRAME  # Legacy support
+
+    # Legacy single symbol support
     SYMBOL = SYMBOLS[0]
 
     # ============================================================
     # TELEGRAM CONFIGURATION
     # ============================================================
     TELEGRAM_BOT_TOKEN = "8325573196:AAEI1UTia5uCgSmsoxmO3aHD3O3fV-WWF0U"
-    TELEGRAM_CHAT_ID = ""  # Will be auto-detected on first /start message
+    TELEGRAM_CHAT_ID = ""  # Auto-detected on /start
 
     # ============================================================
-    # ML MODEL CONFIGURATION
+    # PROFESSIONAL TRADING PARAMETERS
     # ============================================================
-    LSTM_LOOKBACK = 60          # Use 60 periods for LSTM
-    FEATURE_WINDOW = 100        # Use 100 periods for feature calculation
-    MODEL_RETRAIN_HOURS = 24    # Retrain models every 24 hours
-    SIGNAL_THRESHOLD = 0.65     # ML model confidence threshold (65%)
 
-    # Minimum signal strength for alerts
-    BUY_SIGNAL_THRESHOLD = 0.70   # 70% confidence for BUY alerts
-    SELL_SIGNAL_THRESHOLD = 0.70  # 70% confidence for SELL alerts
+    # Signal Quality (High bar like Warren Buffett)
+    MIN_SIGNAL_CONFIDENCE = 0.75      # 75% minimum (higher quality, fewer signals)
+    CONFLUENCE_REQUIRED = 3            # Need 3+ confirmations
+
+    # Balance Buy/Sell signals
+    SIGNAL_BIAS_CORRECTION = True     # Prevent sell-heavy bias
+    MIN_SIGNALS_BALANCE = 0.4         # 40% minimum for each direction
+
+    # Price Action Requirements
+    REQUIRE_PRICE_ACTION_CONFIRMATION = True
+    REQUIRE_STRUCTURE_BREAK = False    # Don't force structure breaks
+    REQUIRE_TREND_ALIGNMENT = True     # Must align with higher TF trend
+
+    # Risk Management (Single solid TP like pros)
+    SINGLE_TP_ONLY = True             # One target, make it count
+    RISK_REWARD_RATIO = 2.0           # Minimum 2:1 R/R
+    MAX_RISK_PER_TRADE_PCT = 1.0      # 1% max risk
+
+    # Stop Loss Strategy
+    STOP_LOSS_METHOD = "STRUCTURE"    # Options: ATR, STRUCTURE, FIXED
+    STOP_LOSS_ATR_MULTIPLIER = 1.5    # Tighter stops (not 2x)
+
+    # Take Profit Strategy
+    TAKE_PROFIT_METHOD = "STRUCTURE"   # Options: ATR, STRUCTURE, FIXED
+    TAKE_PROFIT_ATR_MULTIPLIER = 3.0   # 2:1 R/R minimum
 
     # ============================================================
-    # DATA COLLECTION
+    # PRICE ACTION ANALYSIS
     # ============================================================
-    CANDLES_TO_FETCH = 500      # Fetch 500 candles for analysis
+
+    # Support/Resistance Detection
+    SR_LOOKBACK_PERIODS = 100         # Look back 100 candles
+    SR_TOUCH_TOLERANCE = 0.002        # 0.2% tolerance for S/R
+    SR_STRENGTH_MIN_TOUCHES = 2       # Minimum 2 touches
+
+    # Confluence Zones
+    CONFLUENCE_ZONE_SIZE = 0.005      # 0.5% zone size
+
+    # Trend Detection (Higher TF)
+    TREND_SMA_FAST = 20              # 20-period SMA
+    TREND_SMA_SLOW = 50              # 50-period SMA
+    TREND_STRENGTH_MIN = 0.6         # 60% trend strength minimum
+
+    # Market Structure
+    SWING_HIGH_LOW_PERIODS = 10      # 10 candles for swing detection
+    STRUCTURE_BREAK_CONFIRMATION = 2  # Need 2 candle closes
+
+    # ============================================================
+    # ML MODEL CONFIGURATION (Supporting role, not primary)
+    # ============================================================
+    LSTM_LOOKBACK = 60
+    FEATURE_WINDOW = 100
+    MODEL_RETRAIN_HOURS = 24
+
+    # ML acts as FILTER, not signal generator
+    ML_AS_FILTER = True               # ML confirms, doesn't generate
+    ML_FILTER_THRESHOLD = 0.60        # 60% ML agreement needed
 
     # ============================================================
     # ALERT FREQUENCY CONTROL
     # ============================================================
-    MIN_ALERT_INTERVAL = 300    # Minimum 5 minutes between alerts
-    MAX_DAILY_ALERTS = 20       # Maximum 20 alerts per day
-    CHECK_INTERVAL = 60         # Check for signals every 60 seconds
+    MIN_ALERT_INTERVAL = 900          # 15 minutes (not 5 - quality over quantity)
+    MAX_DAILY_ALERTS = 12             # Max 12 alerts/day (3 per symbol)
+    CHECK_INTERVAL = 180              # Check every 3 minutes (not 1 - reduce noise)
+
+    # Alert Quality
+    ALERT_ONLY_HIGH_PROBABILITY = True
+    ALERT_ONLY_WITH_CONFLUENCE = True
+    ALERT_REQUIRE_TREND_ALIGNMENT = True
 
     # ============================================================
-    # PRICE MOVEMENT ALERTS
+    # DATA COLLECTION
     # ============================================================
-    ENABLE_PRICE_ALERTS = True
-    PRICE_CHANGE_THRESHOLD_1H = 2.0   # Alert if price moves >2% in 1 hour
-    PRICE_CHANGE_THRESHOLD_4H = 5.0   # Alert if price moves >5% in 4 hours
-    PRICE_CHANGE_THRESHOLD_24H = 10.0 # Alert if price moves >10% in 24 hours
+    CANDLES_TO_FETCH = 500            # Need more for proper S/R detection
 
     # ============================================================
-    # TECHNICAL INDICATOR ALERTS
+    # PRICE MOVEMENT ALERTS (Disabled - too noisy)
     # ============================================================
-    ENABLE_INDICATOR_ALERTS = True
-    RSI_OVERSOLD = 30           # RSI below 30 = oversold
-    RSI_OVERBOUGHT = 70         # RSI above 70 = overbought
+    ENABLE_PRICE_ALERTS = False       # Focus on quality setups only
+    ENABLE_INDICATOR_ALERTS = False    # No RSI spam
 
     # ============================================================
     # DATABASE AND LOGGING
     # ============================================================
-    DB_PATH = "alert_data.db"
+    DB_PATH = "professional_alerts.db"
     LOG_LEVEL = "INFO"
-    LOG_FILE = "alert_bot.log"
+    LOG_FILE = "professional_bot.log"
 
     # ============================================================
     # MODEL PATHS
@@ -77,7 +141,7 @@ class Config:
     SCALER_PATH = "models/scaler.pkl"
 
     # ============================================================
-    # ALERT MESSAGE TEMPLATES
+    # ALERT MESSAGE STYLE (Professional, not bot-like)
     # ============================================================
     ALERT_EMOJI = {
         'buy': '🟢',
@@ -89,8 +153,29 @@ class Config:
         'warning': '⚠️',
         'rocket': '🚀',
         'chart': '📊',
-        'money': '💰'
+        'money': '💰',
+        'target': '🎯',
+        'stop': '🛑',
+        'confluence': '✨',
+        'structure': '🏗️'
     }
+
+    # Professional messaging
+    USE_PROFESSIONAL_LANGUAGE = True
+    INCLUDE_RATIONALE = True           # Explain WHY
+    INCLUDE_CONFLUENCE_DETAILS = True  # Show what aligned
+    INCLUDE_MARKET_CONTEXT = True      # Show bigger picture
+
+    @classmethod
+    def get_binance_symbol(cls, delta_symbol: str) -> str:
+        """Convert Delta Exchange symbol to Binance symbol"""
+        return cls.DELTA_SYMBOLS.get(delta_symbol, delta_symbol)
+
+    @classmethod
+    def get_delta_symbol(cls, binance_symbol: str) -> str:
+        """Convert Binance symbol to Delta Exchange symbol"""
+        reverse_map = {v: k for k, v in cls.DELTA_SYMBOLS.items()}
+        return reverse_map.get(binance_symbol, binance_symbol)
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
@@ -106,13 +191,10 @@ class Config:
         if not cls.TELEGRAM_BOT_TOKEN:
             raise ValueError("Telegram bot token not configured")
 
-        if cls.SIGNAL_THRESHOLD < 0.5 or cls.SIGNAL_THRESHOLD > 0.95:
-            raise ValueError("SIGNAL_THRESHOLD should be between 0.5 and 0.95")
+        if cls.RISK_REWARD_RATIO < 1.5:
+            raise ValueError("Risk/Reward ratio must be at least 1.5:1")
 
-        if cls.BUY_SIGNAL_THRESHOLD < 0.5 or cls.BUY_SIGNAL_THRESHOLD > 1.0:
-            raise ValueError("BUY_SIGNAL_THRESHOLD should be between 0.5 and 1.0")
-
-        if cls.SELL_SIGNAL_THRESHOLD < 0.5 or cls.SELL_SIGNAL_THRESHOLD > 1.0:
-            raise ValueError("SELL_SIGNAL_THRESHOLD should be between 0.5 and 1.0")
+        if cls.MIN_SIGNAL_CONFIDENCE < 0.7:
+            raise ValueError("Minimum signal confidence should be at least 70%")
 
         return True

@@ -12,7 +12,7 @@ from typing import Dict, Optional
 from config import Config
 from binance_data_fetcher import BinanceDataFetcher
 from feature_engineering import FeatureEngine
-from signal_generator import SignalGenerator
+from professional_signal_generator import ProfessionalSignalGenerator
 from telegram_notifier import TelegramNotifier
 from logger_config import setup_logging
 
@@ -25,7 +25,7 @@ class AlertBot:
     def __init__(self):
         self.data_fetcher = BinanceDataFetcher()
         self.feature_engine = FeatureEngine()
-        self.signal_generator = SignalGenerator()
+        self.signal_generator = ProfessionalSignalGenerator()
         self.telegram = TelegramNotifier()
 
         self.last_alert_time = None
@@ -88,8 +88,9 @@ class AlertBot:
         """Train ML models with historical data"""
         logger.info("Fetching historical data for training...")
 
-        # Fetch maximum historical data
-        klines = self.data_fetcher.get_klines(Config.SYMBOL, Config.INTERVAL, 1000)
+        # Use first symbol for training (Binance format)
+        binance_symbol = Config.get_binance_symbol(Config.SYMBOLS[0])
+        klines = self.data_fetcher.get_klines(binance_symbol, Config.INTERVAL, 1000)
         df = self.data_fetcher.klines_to_dataframe(klines)
 
         # Calculate features
@@ -97,9 +98,9 @@ class AlertBot:
         df = self.feature_engine.prepare_data_from_binance(df)
         df = self.feature_engine.calculate_all_features(df)
 
-        # Train models
+        # Train models (ML acts as filter, not primary signal)
         feature_cols = self.feature_engine.get_feature_names()
-        self.signal_generator.train(df, feature_cols, epochs=30, batch_size=32)
+        self.signal_generator.train_models(df, feature_cols, epochs=50, batch_size=32)
 
         # Save models
         self.signal_generator.save_models()
@@ -112,16 +113,16 @@ class AlertBot:
 
         symbols_str = ", ".join(Config.SYMBOLS)
         message = f"""
-🤖 <b>Alert Bot Started</b>
+🤖 <b>Professional Alert Bot Started</b>
 
-📊 <b>Monitoring:</b> {symbols_str}
-⏰ <b>Interval:</b> {Config.INTERVAL}
-🎯 <b>Signal Threshold:</b> {Config.SIGNAL_THRESHOLD:.0%}
-📈 <b>Buy Alert:</b> {Config.BUY_SIGNAL_THRESHOLD:.0%}+
-📉 <b>Sell Alert:</b> {Config.SELL_SIGNAL_THRESHOLD:.0%}+
+📊 <b>Monitoring:</b> {symbols_str} (Delta Exchange)
+⏰ <b>Timeframe:</b> {Config.PRIMARY_TIMEFRAME} (trend: {Config.HIGHER_TIMEFRAME})
+🎯 <b>Min Confidence:</b> {Config.MIN_SIGNAL_CONFIDENCE:.0%}
+✨ <b>Confluence Required:</b> {Config.CONFLUENCE_REQUIRED}+ confirmations
+💰 <b>Min R/R:</b> {Config.RISK_REWARD_RATIO}:1
 ⏱️ <b>Check Interval:</b> {Config.CHECK_INTERVAL}s
 
-🟢 System ready and monitoring markets...
+🟢 Trading like a veteran - Quality over quantity
 """
         self.telegram.send_message(message)
 
@@ -165,11 +166,12 @@ class AlertBot:
         return True
 
     def _send_signal_alert(self, signal_data: Dict):
-        """Send trading signal alert via Telegram"""
+        """Send professional trading signal alert via Telegram"""
         signal = signal_data['signal']
         confidence = signal_data['confidence']
         price = signal_data['price']
         timestamp = signal_data['timestamp']
+        symbol = signal_data.get('symbol', Config.SYMBOLS[0])
 
         # Choose emoji based on signal
         if signal == 'BUY':
@@ -190,52 +192,82 @@ class AlertBot:
             emoji = Config.ALERT_EMOJI['neutral']
             strength = "NEUTRAL"
 
-        # Get symbol
-        symbol = signal_data.get('symbol', Config.SYMBOL)
-
-        # Build message with entry/exit levels
+        # Build professional message with rationale
         if signal != 'NEUTRAL':
-            message = f"""
-{emoji} <b>{strength} SIGNAL</b>
+            # Format rationale
+            rationale_text = "\n".join([f"  • {r}" for r in signal_data.get('rationale', [])])
 
-{Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {symbol}
-{Config.ALERT_EMOJI['money']} <b>Entry Price:</b> ${signal_data['entry_price']:,.2f}
-📊 <b>Confidence:</b> {confidence:.1%}
+            # Format confluence details
+            confluence_text = "\n".join([f"  • {c}" for c in signal_data.get('confluence_details', [])])
 
-<b>📍 Entry & Exit Levels:</b>
-🎯 <b>Entry:</b> ${signal_data['entry_price']:,.2f}
-🛑 <b>Stop Loss:</b> ${signal_data['stop_loss']:,.2f}
+            # Support/Resistance levels
+            support_text = ", ".join([f"${s:,.0f}" for s in signal_data.get('support_levels', [])[:2]])
+            resistance_text = ", ".join([f"${r:,.0f}" for r in signal_data.get('resistance_levels', [])[:2]])
 
-<b>Take Profit Targets:</b>
-• <b>TP1:</b> ${signal_data['take_profit_1']:,.2f} (R/R: {signal_data['risk_reward_1']:.1f}:1)
-• <b>TP2:</b> ${signal_data['take_profit_2']:,.2f} (R/R: {signal_data['risk_reward_2']:.1f}:1)
-• <b>TP3:</b> ${signal_data['take_profit_3']:,.2f} (R/R: {signal_data['risk_reward_3']:.1f}:1)
-
-<b>📊 Technical Indicators:</b>
-• RSI(14): {signal_data['rsi_14']:.1f}
-• MACD Histogram: {signal_data['macd_hist']:.4f}
-• ATR(14): ${signal_data['atr']:,.2f}
-
-<b>🤖 Model Scores:</b>
-• LSTM: {signal_data['lstm_score']:.1%}
-• Random Forest: {signal_data['rf_score']:.1%}
-• Ensemble: {signal_data['ensemble_score']:.1%}
-
-⏰ <b>Time:</b> {timestamp.strftime('%Y-%m-%d %H:%M:%S')}
-"""
-        else:
             message = f"""
 {emoji} <b>{strength} SIGNAL</b>
 
 {Config.ALERT_EMOJI['chart']} <b>Symbol:</b> {symbol}
 {Config.ALERT_EMOJI['money']} <b>Price:</b> ${price:,.2f}
-📊 <b>Confidence:</b> {confidence:.1%}
+📊 <b>Confidence:</b> {confidence:.0%}
+{Config.ALERT_EMOJI['confluence']} <b>Confluence:</b> {signal_data.get('confluence_count', 0)} confirmations
 
-<b>Technical Indicators:</b>
+<b>━━━━━━━━━━━━━━━━━━━━</b>
+
+<b>{Config.ALERT_EMOJI['structure']} TRADING SETUP:</b>
+
+🎯 <b>Entry:</b> ${signal_data['entry_price']:,.2f}
+   (Zone: ${signal_data['entry_zone_low']:,.2f} - ${signal_data['entry_zone_high']:,.2f})
+
+🛑 <b>Stop Loss:</b> ${signal_data['stop_loss']:,.2f}
+
+{Config.ALERT_EMOJI['target']} <b>Take Profit:</b> ${signal_data['take_profit']:,.2f}
+   <b>Risk/Reward:</b> {signal_data['risk_reward']:.1f}:1
+
+<b>━━━━━━━━━━━━━━━━━━━━</b>
+
+<b>💡 RATIONALE:</b>
+{rationale_text}
+
+<b>✨ CONFLUENCE FACTORS:</b>
+{confluence_text}
+
+<b>━━━━━━━━━━━━━━━━━━━━</b>
+
+<b>📈 MARKET CONTEXT:</b>
+• <b>Structure:</b> {signal_data.get('market_structure', 'UNKNOWN')}
+• <b>Higher TF Trend:</b> {signal_data.get('higher_tf_trend', 'NEUTRAL')}
+• <b>Support:</b> {support_text if support_text else 'N/A'}
+• <b>Resistance:</b> {resistance_text if resistance_text else 'N/A'}
+
+<b>📊 TECHNICALS:</b>
 • RSI(14): {signal_data['rsi_14']:.1f}
-• MACD Histogram: {signal_data['macd_hist']:.4f}
+• MACD Hist: {signal_data['macd_hist']:.4f}
+• ATR(14): ${signal_data['atr']:,.2f}
+
+<b>🤖 ML FILTER:</b>
+• Ensemble: {signal_data.get('ml_ensemble', 0.5):.0%}
+• LSTM: {signal_data.get('ml_lstm', 0.5):.0%}
+• Random Forest: {signal_data.get('ml_rf', 0.5):.0%}
 
 ⏰ <b>Time:</b> {timestamp.strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        else:
+            # Neutral signal - just log market state
+            message = f"""
+{emoji} <b>Market Update - {symbol}</b>
+
+{Config.ALERT_EMOJI['money']} <b>Price:</b> ${price:,.2f}
+📊 <b>Status:</b> No high-quality setup detected
+
+<b>Market Context:</b>
+• Structure: {signal_data.get('market_structure', 'UNKNOWN')}
+• Higher TF: {signal_data.get('higher_tf_trend', 'NEUTRAL')}
+• Confluence: {signal_data.get('confluence_score', 0):.1f}
+
+<i>Waiting for better opportunity...</i>
+
+⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}
 """
 
         self.telegram.send_message(message)
@@ -245,7 +277,7 @@ class AlertBot:
         self.last_signal = signal
         self.alerts_today += 1
 
-        logger.info(f"✓ Sent {signal} alert (#{self.alerts_today} today)")
+        logger.info(f"✓ Sent {signal} alert for {symbol} (#{self.alerts_today} today)")
 
     def _check_price_movements(self, df, symbol: str):
         """Check for significant price movements"""
@@ -323,35 +355,57 @@ This could indicate a potential selling opportunity.
         try:
             all_success = True
 
-            # Analyze each symbol
-            for symbol in Config.SYMBOLS:
+            # Analyze each Delta Exchange symbol
+            for delta_symbol in Config.SYMBOLS:
                 try:
-                    logger.info(f"Analyzing {symbol}...")
+                    logger.info(f"Analyzing {delta_symbol} (Delta Exchange)...")
 
-                    # Fetch latest data
-                    klines = self.data_fetcher.get_klines(symbol, Config.INTERVAL, Config.CANDLES_TO_FETCH)
-                    df = self.data_fetcher.klines_to_dataframe(klines)
+                    # Convert to Binance symbol for data fetching
+                    binance_symbol = Config.get_binance_symbol(delta_symbol)
+                    logger.debug(f"Fetching data for {binance_symbol} (Binance proxy)")
 
-                    # Calculate features
-                    df = self.feature_engine.prepare_data_from_binance(df)
-                    df = self.feature_engine.calculate_all_features(df)
+                    # Fetch primary timeframe data (15m)
+                    klines_primary = self.data_fetcher.get_klines(
+                        binance_symbol,
+                        Config.PRIMARY_TIMEFRAME,
+                        Config.CANDLES_TO_FETCH
+                    )
+                    df_primary = self.data_fetcher.klines_to_dataframe(klines_primary)
 
-                    # Generate signal
-                    signal_data = self.signal_generator.predict(df)
-                    signal_data['symbol'] = symbol  # Add symbol to signal data
+                    # Fetch higher timeframe for trend context (1h)
+                    klines_higher = self.data_fetcher.get_klines(
+                        binance_symbol,
+                        Config.HIGHER_TIMEFRAME,
+                        200  # Need enough for trend analysis
+                    )
+                    df_higher = self.data_fetcher.klines_to_dataframe(klines_higher)
+
+                    # Calculate features for both timeframes
+                    df_primary = self.feature_engine.prepare_data_from_binance(df_primary)
+                    df_primary = self.feature_engine.calculate_all_features(df_primary)
+
+                    df_higher = self.feature_engine.prepare_data_from_binance(df_higher)
+                    df_higher = self.feature_engine.calculate_all_features(df_higher)
+
+                    # Generate professional signal (price action + ML filter)
+                    signal_data = self.signal_generator.predict(
+                        df_primary,
+                        higher_tf_df=df_higher,
+                        symbol=delta_symbol
+                    )
 
                     # Check if alert should be sent
                     if self._should_send_alert(signal_data['signal']):
                         if signal_data['signal'] != 'NEUTRAL':
                             self._send_signal_alert(signal_data)
-                            # Check for extreme indicators
+                            # Check for extreme indicators (if enabled)
                             self._check_indicator_alerts(signal_data)
 
-                    # Check price movements
-                    self._check_price_movements(df, symbol)
+                    # Check price movements (if enabled)
+                    self._check_price_movements(df_primary, delta_symbol)
 
                 except Exception as e:
-                    logger.error(f"Error analyzing {symbol}: {e}")
+                    logger.error(f"Error analyzing {delta_symbol}: {e}", exc_info=True)
                     all_success = False
 
             return all_success
