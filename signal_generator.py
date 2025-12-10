@@ -7,6 +7,7 @@ import pandas as pd
 from typing import Dict, Tuple
 import pickle
 import os
+import logging
 from datetime import datetime
 
 import tensorflow as tf
@@ -18,7 +19,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 from config import Config
-from logger_config import logger
+
+logger = logging.getLogger(__name__)
 
 
 class SignalGenerator:
@@ -296,6 +298,13 @@ class SignalGenerator:
 
 
 if __name__ == "__main__":
+    # Setup basic logging for testing
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+
     # Test signal generator
     from binance_data_fetcher import BinanceDataFetcher
     from feature_engineering import FeatureEngine

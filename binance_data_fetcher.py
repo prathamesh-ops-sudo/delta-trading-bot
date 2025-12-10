@@ -4,9 +4,11 @@ Binance Public API Data Fetcher (No Authentication Required)
 import requests
 import pandas as pd
 import time
+import logging
 from typing import List, Dict, Optional
 from datetime import datetime
-from logger_config import logger
+
+logger = logging.getLogger(__name__)
 
 class BinanceDataFetcher:
     """Fetch cryptocurrency data from Binance public API"""
@@ -182,6 +184,13 @@ class BinanceDataFetcher:
 
 
 if __name__ == "__main__":
+    # Setup basic logging for testing
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+
     # Test the data fetcher
     fetcher = BinanceDataFetcher()
 

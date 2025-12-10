@@ -5,6 +5,7 @@ Monitors crypto markets and sends intelligent buy/sell signals
 import time
 import signal
 import sys
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -13,7 +14,9 @@ from binance_data_fetcher import BinanceDataFetcher
 from feature_engineering import FeatureEngine
 from signal_generator import SignalGenerator
 from telegram_notifier import TelegramNotifier
-from logger_config import logger
+from logger_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 class AlertBot:
@@ -43,6 +46,9 @@ class AlertBot:
 
     def initialize(self):
         """Initialize bot - load or train models"""
+        # Setup logging first
+        setup_logging()
+
         logger.info("Initializing Alert Bot...")
 
         # Validate configuration

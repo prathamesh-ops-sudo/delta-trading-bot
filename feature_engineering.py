@@ -5,9 +5,11 @@ Fixed for Binance data and proper error handling
 """
 import numpy as np
 import pandas as pd
+import logging
 from typing import List
 import talib
-from logger_config import logger
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureEngine:
@@ -374,6 +376,13 @@ class FeatureEngine:
 
 
 if __name__ == "__main__":
+    # Setup basic logging for testing
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+
     # Test feature engineering
     from binance_data_fetcher import BinanceDataFetcher
 
