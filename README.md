@@ -1,298 +1,365 @@
-# Automated Cryptocurrency Trading Bot for Delta Exchange
+# 🤖 Crypto Alert Bot
 
-## Overview
-A professional, production-ready automated trading system for BTC/USD on Delta Exchange India. The system uses advanced machine learning (LSTM + Random Forest ensemble) for signal generation, comprehensive risk management, and intelligent trade monitoring.
+**ML-Powered Cryptocurrency Trading Signals via Telegram**
 
-## Features
+An intelligent cryptocurrency monitoring system that uses Machine Learning (LSTM + Random Forest) to analyze market conditions and send real-time trading alerts directly to your Telegram.
 
-### Machine Learning & Analytics
-- **LSTM Neural Network**: Bidirectional LSTM for time-series price prediction
-- **Random Forest Classifier**: Ensemble decision-making for robust signals
-- **50+ Technical Indicators**: Comprehensive feature engineering including:
-  - Trend indicators (SMA, EMA, MACD, ADX, Ichimoku)
-  - Momentum oscillators (RSI, Stochastic, CCI, MFI)
-  - Volatility measures (Bollinger Bands, ATR, Keltner Channels)
-  - Volume analysis (OBV, CMF, Force Index)
-  - Pattern recognition (candlestick patterns)
+---
 
-### Risk Management
-- **Dynamic Position Sizing**: Based on signal confidence and account balance
-- **Multi-Level Take Profit**: Partial exits at 3%, 5%, and 8% profit levels
-- **Stop Loss Protection**: ATR-based or fixed percentage stop loss
-- **Trailing Stop**: Locks in profits as price moves favorably
-- **Daily Trade Limits**: Prevents overtrading
-- **Risk Scoring System**: Evaluates trade quality before execution
+## 🌟 Features
 
-### Trade Monitoring
-- **Real-time Position Tracking**: Monitors all open positions every 30 seconds
-- **Signal Strength Analysis**: Exits trades when ML signal weakens
-- **Automatic Exit Management**: Handles stop loss, take profit, and weakness exits
-- **PnL Tracking**: Real-time profit/loss calculation with ROI metrics
+### 🧠 Machine Learning Powered
+- **Bidirectional LSTM** neural network for time-series pattern recognition
+- **Random Forest** ensemble for robust signal generation
+- **50+ Technical Indicators** including RSI, MACD, Bollinger Bands, ATR, volume analysis
+- **Ensemble Predictions** combining multiple ML models for higher accuracy
 
-### Telegram Notifications
-- Trade signal alerts with confidence scores
-- Trade execution confirmations
-- Position closure notifications with PnL
-- Daily performance summaries
-- Risk alerts and error notifications
+### 📊 Market Analysis
+- Real-time cryptocurrency price monitoring via **Binance Public API** (no authentication required)
+- Comprehensive technical analysis with 100+ features
+- Candlestick pattern recognition
+- Support/resistance level detection
+- Volatility and momentum indicators
 
-## System Architecture
+### 📱 Telegram Alerts
+- **BUY/SELL/NEUTRAL** signals with confidence scores
+- Price movement alerts (1h, 4h, 24h thresholds)
+- RSI oversold/overbought notifications
+- Auto-detection of Telegram chat ID
+- Beautiful formatted messages with emojis
+
+### ⚙️ Smart Alert Management
+- Configurable signal confidence thresholds
+- Daily alert limits to prevent spam
+- Minimum time interval between alerts
+- No repeated neutral signals
+
+---
+
+## 📁 Project Structure
 
 ```
-trading_bot.py              # Main orchestrator
-├── delta_exchange_api.py   # API integration layer
-├── feature_engineering.py  # Technical indicator calculation
-├── ml_models.py            # LSTM + Random Forest models
-├── risk_manager.py         # Position sizing & risk management
-├── order_executor.py       # Order placement & management
-├── trade_monitor.py        # Position monitoring & exit logic
-├── telegram_notifier.py    # Telegram notifications
-├── logger_config.py        # Logging configuration
-└── config.py               # System configuration
+trade_project/
+├── alert_bot.py              # Main alert bot orchestrator
+├── binance_data_fetcher.py   # Binance API data retrieval
+├── feature_engineering.py    # Technical indicator calculation
+├── signal_generator.py       # ML model training & prediction
+├── telegram_notifier.py      # Telegram message sending
+├── config.py                 # Configuration management
+├── logger_config.py          # Logging setup
+├── requirements.txt          # Python dependencies
+├── README.md                 # This file
+└── models/                   # Trained ML models (generated)
+    ├── lstm_model.h5
+    ├── rf_model.pkl
+    └── scaler.pkl
 ```
 
-## Configuration Parameters
+---
 
-### Trading Settings
-- **Symbol**: BTCUSD
-- **Timeframe**: 5 minutes
-- **Max Leverage**: 5x (conservative, can go up to 20x)
-- **Max Position Size**: 15% of account balance
-- **Stop Loss**: 2% from entry
-- **Take Profit**: 3%, 5%, 8% levels
+## 🚀 Quick Start
 
-### Frequency Control
-- **Min Trade Interval**: 5 minutes between trades
-- **Max Daily Trades**: 12 trades per day
-- **Signal Threshold**: 65% minimum ML confidence
+### 1. Prerequisites
 
-### ML Settings
-- **LSTM Lookback**: 60 candles
-- **Model Retraining**: Every 24 hours
-- **Feature Window**: 100 candles for feature calculation
+- Python 3.8+
+- TA-Lib library
+- Telegram Bot Token (get from [@BotFather](https://t.me/botfather))
 
-## Installation
+### 2. Installation
 
-### Prerequisites
-- Python 3.8 or higher
-- Delta Exchange India API credentials
-- Telegram Bot Token (optional but recommended)
+#### On Ubuntu/EC2:
 
-### Step 1: Install Dependencies
-
-**Windows:**
 ```bash
-pip install -r requirements.txt
-```
+# Clone repository
+git clone https://github.com/prathamesh-ops-sudo/delta-trading-bot.git
+cd delta-trading-bot
 
-**Important: TA-Lib Installation**
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
 
-TA-Lib requires additional steps on Windows:
+# Install system dependencies
+sudo apt-get update
+sudo apt-get install -y build-essential wget
 
-1. Download the appropriate `.whl` file from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
-   - For Python 3.8: `TA_Lib‑0.4.28‑cp38‑cp38‑win_amd64.whl`
-   - For Python 3.9: `TA_Lib‑0.4.28‑cp39‑cp39‑win_amd64.whl`
-   - For Python 3.10: `TA_Lib‑0.4.28‑cp310‑cp310‑win_amd64.whl`
-
-2. Install the downloaded wheel file:
-```bash
-pip install TA_Lib‑0.4.28‑cp38‑cp38‑win_amd64.whl
-```
-
-**Linux/Mac:**
-```bash
-# Install TA-Lib C library first
+# Install TA-Lib
 wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
 tar -xzf ta-lib-0.4.0-src.tar.gz
 cd ta-lib/
 ./configure --prefix=/usr
 make
 sudo make install
+sudo ldconfig
+cd ..
 
-# Then install Python dependencies
+# Install Python packages (compatible NumPy first!)
+pip install --no-cache-dir "numpy<2.0" "numpy>=1.23.0"
+pip install --no-cache-dir TA-Lib
+pip install --no-cache-dir -r requirements.txt
+```
+
+#### On Windows:
+
+```bash
+# Clone repository
+git clone https://github.com/prathamesh-ops-sudo/delta-trading-bot.git
+cd delta-trading-bot
+
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate
+
+# Install TA-Lib from wheel
+pip install TA_Lib-0.4.28-cp310-cp310-win_amd64.whl
+
+# Install other packages
 pip install -r requirements.txt
 ```
 
-### Step 2: Configure API Credentials
+### 3. Configuration
 
-The API credentials are already set in `config.py`. If you need to change them:
+Edit `config.py`:
 
 ```python
-# config.py
-DELTA_API_KEY = "your_api_key_here"
-DELTA_API_SECRET = "your_api_secret_here"
+# Telegram Configuration
+TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather
+
+# Trading pair to monitor
+SYMBOL = "BTCUSDT"  # Bitcoin/USDT
+
+# Timeframe
+INTERVAL = "5m"  # 1m, 5m, 15m, 30m, 1h, 4h, 1d
+
+# Signal thresholds
+BUY_SIGNAL_THRESHOLD = 0.70   # 70% confidence for BUY
+SELL_SIGNAL_THRESHOLD = 0.70  # 70% confidence for SELL
+
+# Alert limits
+MAX_DAILY_ALERTS = 20
+MIN_ALERT_INTERVAL = 300  # 5 minutes
 ```
 
-### Step 3: Set Up Telegram Bot (Optional but Recommended)
+### 4. Get Telegram Chat ID
 
-1. Create a Telegram bot:
-   - Open Telegram and search for @BotFather
-   - Send `/newbot` and follow instructions
-   - Copy the bot token
+Send `/start` to your bot on Telegram. The bot will auto-detect and display your chat ID.
 
-2. Get your Chat ID:
-   - Start a chat with your bot
-   - Send any message
-   - Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
-   - Find your chat ID in the response
+### 5. Run the Bot
 
-3. Update `config.py`:
+```bash
+# Activate virtual environment
+source venv/bin/activate  # On Linux
+# or
+venv\Scripts\activate  # On Windows
+
+# Run the alert bot
+python alert_bot.py
+```
+
+On first run, the bot will:
+1. ✅ Fetch historical data from Binance
+2. ✅ Calculate 50+ technical indicators
+3. ✅ Train LSTM and Random Forest models
+4. ✅ Save models to disk
+5. ✅ Start monitoring and send alerts
+
+**Subsequent runs** load pre-trained models (much faster!).
+
+---
+
+## 🔧 Testing Components
+
+### Test Binance Data Fetcher
+```bash
+python binance_data_fetcher.py
+```
+Expected output:
+- ✓ Connection successful
+- ✓ Current BTC price
+- ✓ 24h statistics
+- ✓ Fetched candles
+- ✓ DataFrame created
+
+### Test Feature Engineering
+```bash
+python feature_engineering.py
+```
+Expected output:
+- ✓ Fetched 500 candles
+- ✓ Generated 100+ features
+- ✓ Sample feature values
+
+### Test Signal Generator
+```bash
+python signal_generator.py
+```
+Expected output:
+- ✓ Data fetched
+- ✓ Features calculated
+- ✓ Models trained
+- ✓ Signal generated (BUY/SELL/NEUTRAL)
+
+---
+
+## 📈 How It Works
+
+### 1. Data Collection
+- Fetches OHLCV data from **Binance Public API** (no authentication)
+- Supports all Binance spot trading pairs
+- Retrieves up to 1000 historical candles
+
+### 2. Feature Engineering
+Calculates **50+ technical indicators**:
+
+**Trend Indicators:**
+- SMA (7, 14, 21, 50, 100, 200)
+- EMA (7, 14, 21, 50, 100, 200)
+- MACD (12, 26, 9)
+- ADX, +DI, -DI
+- Parabolic SAR
+
+**Momentum Indicators:**
+- RSI (9, 14, 21)
+- Stochastic Oscillator
+- Williams %R
+- CCI (Commodity Channel Index)
+- ROC (Rate of Change)
+
+**Volatility Indicators:**
+- Bollinger Bands
+- ATR (Average True Range)
+- NATR (Normalized ATR)
+- Historical Volatility
+
+**Volume Indicators:**
+- OBV (On-Balance Volume)
+- MFI (Money Flow Index)
+- A/D (Accumulation/Distribution)
+- Volume ratios
+
+**Pattern Recognition:**
+- Doji, Hammer, Shooting Star
+- Engulfing, Harami
+- Morning Star, Evening Star
+
+### 3. ML Model Ensemble
+
+#### LSTM (60% weight)
+- Bidirectional LSTM architecture
+- 3 LSTM layers (128 → 64 → 32 units)
+- Dropout & Batch Normalization
+- Analyzes 60-period sequences
+
+#### Random Forest (40% weight)
+- 200 decision trees
+- Max depth: 20
+- Parallel processing
+
+### 4. Signal Generation
+
+**Signal Logic:**
 ```python
-TELEGRAM_BOT_TOKEN = "your_bot_token_here"
-TELEGRAM_CHAT_ID = "your_chat_id_here"
+if ensemble_score >= 0.70:
+    signal = "BUY"
+elif ensemble_score <= 0.30:
+    signal = "SELL"
+else:
+    signal = "NEUTRAL"
 ```
 
-### Step 4: Test the Bot
+**Alert Sent When:**
+- ✅ Confidence meets threshold
+- ✅ Not sent too recently (5 min cooldown)
+- ✅ Daily limit not exceeded
+- ✅ Signal changed from previous
 
-Before running the bot with real trading, test the connection:
+---
+
+## 🎯 Alert Examples
+
+### Buy Signal
+```
+💚 STRONG BUY SIGNAL
+
+📊 Symbol: BTCUSDT
+💰 Price: $98,234.50
+📊 Confidence: 87.3%
+
+Technical Indicators:
+• RSI(14): 42.3
+• MACD Histogram: 0.0234
+• BB Position: 0.35
+
+Model Scores:
+• LSTM: 88.5%
+• Random Forest: 85.2%
+
+⏰ Time: 2025-12-10 15:30:45
+```
+
+### Price Alert
+```
+⚠️ Price Alert
+
+📈 BTCUSDT moved +3.45% in 1 hour
+
+Current Price: $99,123.00
+1h Ago: $95,850.00
+```
+
+### RSI Alert
+```
+ℹ️ RSI Alert
+
+📉 BTCUSDT is OVERSOLD
+
+RSI(14): 28.5
+Price: $96,543.00
+
+This could indicate a potential buying opportunity.
+```
+
+---
+
+## ☁️ EC2 Deployment
+
+### Recommended Instance
+- **Type:** t3.micro or t3.small
+- **vCPUs:** 2
+- **RAM:** 1-2 GB
+- **Storage:** 8-16 GB
+- **Region:** Choose closest to you
+
+### Cost Estimate
+- **t3.micro:** ~$7.50/month (~₹563/month)
+- **t3.small:** ~$15/month (~₹1,125/month)
+
+### Setup on EC2
 
 ```bash
-python test_connection.py
+# Update system
+sudo apt-get update && sudo apt-get upgrade -y
+
+# Install dependencies
+sudo apt-get install -y python3 python3-pip python3-venv git build-essential wget
+
+# Clone and setup (see Installation section above)
+
+# Create systemd service
+sudo nano /etc/systemd/system/alert-bot.service
 ```
 
-## Running the Bot
-
-### Start the Trading Bot
-
-```bash
-python trading_bot.py
-```
-
-### What Happens on First Run
-
-1. **Model Training**: If no pre-trained models exist, the bot will:
-   - Fetch 500 historical candles
-   - Calculate 50+ technical indicators
-   - Train LSTM and Random Forest models
-   - This takes 5-10 minutes on first run
-
-2. **Scheduled Tasks Setup**:
-   - Trading cycle: Every 5 minutes
-   - Position monitoring: Every 30 seconds
-   - Model retraining check: Every hour
-   - Daily report: At midnight
-   - State saving: Every hour
-
-3. **Continuous Operation**: The bot will:
-   - Analyze market conditions
-   - Generate ML-based trading signals
-   - Execute trades when conditions are met
-   - Monitor open positions
-   - Send Telegram notifications
-
-### Stopping the Bot
-
-Press `Ctrl+C` to stop gracefully. The bot will:
-- Save current state
-- Send final performance report
-- Optionally close open positions (commented out by default)
-
-## Trading Strategy
-
-### Signal Generation
-1. **Feature Extraction**: Calculates 50+ technical indicators
-2. **LSTM Prediction**: Analyzes price sequences for trend prediction
-3. **Random Forest Classification**: Makes binary up/down predictions
-4. **Ensemble Decision**: Combines both models with weighted average
-5. **Confidence Filtering**: Only trades signals above 65% confidence
-
-### Trade Execution
-1. **Risk Assessment**: Evaluates signal strength, volatility, existing positions
-2. **Position Sizing**: Calculates optimal size based on account balance and confidence
-3. **Order Placement**: Places market order with calculated leverage
-4. **Protection Orders**: Sets stop loss and multiple take profit levels
-
-### Trade Monitoring
-1. **Signal Strength Tracking**: Continuously reassesses ML signal alignment
-2. **Weakness Detection**: Exits if signal drops below 35% strength
-3. **Trailing Stop**: Locks in profits using ATR-based trailing
-4. **Automatic Management**: Handles all stop loss and take profit executions
-
-## Risk Parameters
-
-### Conservative Settings (Default)
-- Max Leverage: 5x
-- Max Position: 15% of capital
-- Stop Loss: 2%
-- Min Confidence: 65%
-
-### Moderate Settings
-```python
-# config.py
-MAX_LEVERAGE = 7
-MAX_POSITION_SIZE_PCT = 0.20  # 20%
-SIGNAL_THRESHOLD = 0.60  # 60%
-```
-
-### Aggressive Settings (Higher Risk)
-```python
-# config.py
-MAX_LEVERAGE = 10
-MAX_POSITION_SIZE_PCT = 0.25  # 25%
-SIGNAL_THRESHOLD = 0.55  # 55%
-MAX_DAILY_TRADES = 20
-```
-
-## Cloud Deployment (Budget: 2,000 INR)
-
-### Option 1: Google Cloud Free Tier (Recommended)
-**Cost**: 0 INR/month (Free tier)
-
-```bash
-# Deploy on Google Cloud f1-micro instance
-gcloud compute instances create trading-bot \
-    --machine-type=f1-micro \
-    --zone=asia-south1-a \
-    --image-family=ubuntu-2004-lts \
-    --image-project=ubuntu-os-cloud
-```
-
-### Option 2: Oracle Cloud Free Tier
-**Cost**: 0 INR/month (Always free)
-- 2 VM instances (1/8 OCPU, 1GB RAM each)
-
-### Option 3: Lightsail
-**Cost**: ~370 INR/month ($5)
-- 512 MB RAM, 1 vCPU
-- 20 GB SSD
-
-### Deployment Steps
-
-1. **Upload Files**:
-```bash
-scp -r trade_project/* user@your-server:/home/user/trading-bot/
-```
-
-2. **Install Dependencies**:
-```bash
-ssh user@your-server
-cd trading-bot
-pip install -r requirements.txt
-```
-
-3. **Run with Screen** (keeps running after disconnect):
-```bash
-screen -S trading-bot
-python trading_bot.py
-# Press Ctrl+A then D to detach
-```
-
-4. **Setup Systemd Service** (auto-restart):
-```bash
-sudo nano /etc/systemd/system/trading-bot.service
-```
-
-Add:
+**Service file content:**
 ```ini
 [Unit]
-Description=Crypto Trading Bot
+Description=Crypto Alert Bot
 After=network.target
 
 [Service]
 Type=simple
-User=your-user
-WorkingDirectory=/home/user/trading-bot
-ExecStart=/usr/bin/python3 trading_bot.py
+User=ubuntu
+WorkingDirectory=/home/ubuntu/delta-trading-bot
+Environment="PATH=/home/ubuntu/delta-trading-bot/venv/bin"
+ExecStart=/home/ubuntu/delta-trading-bot/venv/bin/python alert_bot.py
 Restart=always
 RestartSec=10
 
@@ -300,116 +367,185 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Enable:
+**Enable and start service:**
 ```bash
-sudo systemctl enable trading-bot
-sudo systemctl start trading-bot
-sudo systemctl status trading-bot
+sudo systemctl daemon-reload
+sudo systemctl enable alert-bot
+sudo systemctl start alert-bot
+sudo systemctl status alert-bot
 ```
 
-## Monitoring & Logs
-
-### View Logs
+**View logs:**
 ```bash
-tail -f trading_bot.log
+sudo journalctl -u alert-bot -f
 ```
-
-### Check Performance
-- Daily Telegram summaries
-- Log file analysis
-- Check `risk_manager_state.json` for trade history
-
-## Safety Features
-
-1. **Position Limits**: Maximum 1 open position at a time (configurable)
-2. **Daily Trade Cap**: Prevents overtrading
-3. **Stop Loss Protection**: Every trade has automatic stop loss
-4. **Emergency Shutdown**: Ctrl+C gracefully closes everything
-5. **State Persistence**: Saves state every hour
-6. **Error Notifications**: Telegram alerts for critical errors
-
-## Performance Metrics
-
-The system tracks:
-- Win rate
-- Total PnL
-- Average win/loss
-- Profit factor
-- Maximum drawdown
-- Sharpe ratio (in logs)
-
-## Troubleshooting
-
-### Issue: TA-Lib import error
-**Solution**: Follow TA-Lib installation steps in Installation section
-
-### Issue: API connection failed
-**Solution**: Check API credentials in config.py and network connectivity
-
-### Issue: Models not training
-**Solution**: Ensure enough historical data (500+ candles available)
-
-### Issue: No trades executing
-**Solution**:
-- Check signal confidence threshold
-- Verify account balance
-- Check daily trade limits
-- Review logs for risk assessment rejections
-
-## Support Files
-
-- `trading_bot.log`: Main application logs
-- `risk_manager_state.json`: Trade history and state
-- `models/`: Trained ML models
-  - `lstm_model.h5`: LSTM neural network
-  - `rf_model.pkl`: Random Forest classifier
-  - `scaler.pkl`: Feature scaler
-
-## Customization
-
-### Adjust Trading Frequency
-```python
-# config.py
-TIMEFRAME = "15m"  # Change to 15-minute candles
-MIN_TRADE_INTERVAL = 900  # 15 minutes
-```
-
-### Modify Risk Parameters
-```python
-# config.py
-STOP_LOSS_PCT = 0.015  # 1.5% stop loss
-TAKE_PROFIT_LEVELS = [0.02, 0.04, 0.06]  # 2%, 4%, 6%
-```
-
-### Change Position Sizing Logic
-Edit `risk_manager.py` in the `calculate_position_size()` method
-
-## Disclaimer
-
-This trading bot is for educational and research purposes. Cryptocurrency trading involves substantial risk of loss. Past performance does not guarantee future results. Only trade with capital you can afford to lose.
-
-**Important Notes**:
-- Always test with small amounts first
-- Monitor the bot regularly
-- Keep API credentials secure
-- Understand the risks of leveraged trading
-- Be aware of exchange fees and funding rates
-
-## License
-
-This project is provided as-is without warranty. Use at your own risk.
-
-## Contact & Support
-
-For issues with this bot:
-- Check the logs first
-- Review configuration settings
-- Test components individually
-- Monitor Telegram notifications
 
 ---
 
-**Built with**: Python, TensorFlow, Scikit-learn, TA-Lib
-**Exchange**: Delta Exchange India
-**Strategy**: ML Ensemble (LSTM + Random Forest)
-**Risk Management**: Multi-layered position sizing and protection
+## 📊 Configuration Options
+
+### Alert Thresholds
+
+```python
+# Signal confidence thresholds
+BUY_SIGNAL_THRESHOLD = 0.70   # Higher = fewer, stronger signals
+SELL_SIGNAL_THRESHOLD = 0.70
+
+# Price movement alerts
+PRICE_CHANGE_THRESHOLD_1H = 2.0   # %
+PRICE_CHANGE_THRESHOLD_4H = 5.0   # %
+PRICE_CHANGE_THRESHOLD_24H = 10.0 # %
+
+# RSI thresholds
+RSI_OVERSOLD = 30   # Below = oversold
+RSI_OVERBOUGHT = 70 # Above = overbought
+```
+
+### Alert Frequency
+
+```python
+CHECK_INTERVAL = 60          # Check every 60 seconds
+MIN_ALERT_INTERVAL = 300     # 5 min between alerts
+MAX_DAILY_ALERTS = 20        # Max 20 alerts per day
+```
+
+### Model Parameters
+
+```python
+LSTM_LOOKBACK = 60           # 60 periods for LSTM
+FEATURE_WINDOW = 100         # 100 periods for features
+CANDLES_TO_FETCH = 500       # Fetch 500 candles
+MODEL_RETRAIN_HOURS = 24     # Retrain every 24 hours
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+### TA-Lib Installation Issues
+
+**Error:** `ModuleNotFoundError: No module named '_ta_lib'`
+
+**Solution:**
+```bash
+# Ensure NumPy <2.0 is installed FIRST
+pip install --force-reinstall "numpy<2.0"
+pip install --force-reinstall TA-Lib
+```
+
+### Telegram Not Receiving Messages
+
+1. Check bot token is correct
+2. Send `/start` to bot to enable chat
+3. Verify TELEGRAM_CHAT_ID is set in config
+4. Test: `python telegram_notifier.py`
+
+### Models Not Training
+
+**Error:** `Failed to converge`
+
+**Solution:**
+- Fetch more historical data (increase CANDLES_TO_FETCH)
+- Check internet connection to Binance
+- Verify TA-Lib is properly installed
+
+### Memory Issues on EC2
+
+Use swap space:
+```bash
+sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+---
+
+## 📝 Logging
+
+Logs are saved to `alert_bot.log` and console.
+
+**View logs:**
+```bash
+tail -f alert_bot.log
+```
+
+**Log levels:**
+- `INFO`: Normal operations
+- `WARNING`: Non-critical issues
+- `ERROR`: Critical errors
+
+---
+
+## 🔐 Security Notes
+
+- Never commit API keys or bot tokens to Git
+- Use environment variables for sensitive data
+- Keep your EC2 instance updated
+- Use security groups to restrict access
+
+---
+
+## 🤝 Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+---
+
+## 📄 License
+
+MIT License - feel free to use and modify!
+
+---
+
+## 📞 Support
+
+- **Issues:** https://github.com/prathamesh-ops-sudo/delta-trading-bot/issues
+- **Telegram:** Set up your own bot using [@BotFather](https://t.me/botfather)
+
+---
+
+## 🎓 Data Sources
+
+- **Binance Public API:** https://api.binance.com
+  - No authentication required
+  - Free tier with generous rate limits
+  - Real-time OHLCV data
+  - 30 calls/minute for free
+
+---
+
+## ⚠️ Disclaimer
+
+This bot provides **informational alerts only**. It does NOT execute trades automatically.
+
+**Important:**
+- This is NOT financial advice
+- Always do your own research (DYOR)
+- Cryptocurrency trading carries risk
+- Past performance doesn't guarantee future results
+- Only invest what you can afford to lose
+
+---
+
+## 🚀 Roadmap
+
+- [ ] Multi-symbol monitoring
+- [ ] Web dashboard
+- [ ] Backtesting framework
+- [ ] Model performance tracking
+- [ ] Custom indicator support
+- [ ] Discord integration
+- [ ] Advanced chart analysis
+- [ ] Portfolio tracking
+
+---
+
+**Made with ❤️ for crypto traders**
+
+*Happy Trading! 🚀*

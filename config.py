@@ -1,66 +1,92 @@
 """
-Configuration Management for Delta Exchange Trading Bot
+Configuration Management for Crypto Alert System
 """
 import os
 from typing import Dict, Any
 
 class Config:
-    """Centralized configuration for the trading system"""
+    """Centralized configuration for the alerting system"""
 
-    # Delta Exchange API Configuration
-    # DEMO ENVIRONMENT (for testing)
-    DELTA_API_KEY = "X0hXz0ovm7TNahwksM7z2YzRpoCOXR"
-    DELTA_API_SECRET = "UelavyXzxDVve0hqoBhTBUQasWL3FEdApbgEu9FW98SlOWAWbqP4XzIB0pUP"
-    DELTA_BASE_URL = "https://cdn-ind.testnet.deltaex.org"  # TESTNET India (demo keys)
+    # ============================================================
+    # DATA SOURCE CONFIGURATION (Binance Public API - No Auth)
+    # ============================================================
+    SYMBOL = "BTCUSDT"  # Trading pair to monitor
+    INTERVAL = "5m"     # Kline interval: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 
-    # For PRODUCTION (uncomment when ready):
-    # DELTA_BASE_URL = "https://api.india.delta.exchange"
-
-    # Trading Configuration
-    SYMBOL = "BTCUSD"  # Main trading pair
-    TIMEFRAME = "5m"  # 5-minute candles for analysis
-
-    # Risk Management Parameters
-    MAX_POSITION_SIZE_PCT = 0.15  # Maximum 15% of capital per trade
-    MAX_LEVERAGE = 5  # Conservative leverage (can go up to 20x on Delta)
-    STOP_LOSS_PCT = 0.02  # 2% stop loss
-    TAKE_PROFIT_LEVELS = [0.03, 0.05, 0.08]  # 3%, 5%, 8% take profit levels
-    TAKE_PROFIT_SIZES = [0.4, 0.4, 0.2]  # Partial exits at each level
-
-    # Trading Frequency Control
-    MIN_TRADE_INTERVAL = 300  # 5 minutes minimum between trades
-    MAX_DAILY_TRADES = 12  # Maximum 12 trades per day
-    SIGNAL_THRESHOLD = 0.65  # ML model confidence threshold (0-1)
-
-    # Fee Structure (Delta Exchange typical fees)
-    MAKER_FEE = 0.0005  # 0.05%
-    TAKER_FEE = 0.001   # 0.1%
-
-    # ML Model Configuration
-    LSTM_LOOKBACK = 60  # Use 60 periods for LSTM
-    FEATURE_WINDOW = 100  # Use 100 periods for feature calculation
-    MODEL_RETRAIN_HOURS = 24  # Retrain models every 24 hours
-
-    # Data Collection
-    CANDLES_TO_FETCH = 500  # Fetch 500 candles for analysis
-
-    # Telegram Configuration
+    # ============================================================
+    # TELEGRAM CONFIGURATION
+    # ============================================================
     TELEGRAM_BOT_TOKEN = "8325573196:AAEI1UTia5uCgSmsoxmO3aHD3O3fV-WWF0U"
-    TELEGRAM_CHAT_ID = ""  # Will be auto-detected on first message
+    TELEGRAM_CHAT_ID = ""  # Will be auto-detected on first /start message
 
-    # Trade Monitoring
-    TRADE_CHECK_INTERVAL = 30  # Check trades every 30 seconds
-    WEAKNESS_EXIT_THRESHOLD = 0.35  # Exit if signal strength drops below 35%
+    # ============================================================
+    # ML MODEL CONFIGURATION
+    # ============================================================
+    LSTM_LOOKBACK = 60          # Use 60 periods for LSTM
+    FEATURE_WINDOW = 100        # Use 100 periods for feature calculation
+    MODEL_RETRAIN_HOURS = 24    # Retrain models every 24 hours
+    SIGNAL_THRESHOLD = 0.65     # ML model confidence threshold (65%)
 
-    # Database and Logging
-    DB_PATH = "trading_data.db"
+    # Minimum signal strength for alerts
+    BUY_SIGNAL_THRESHOLD = 0.70   # 70% confidence for BUY alerts
+    SELL_SIGNAL_THRESHOLD = 0.70  # 70% confidence for SELL alerts
+
+    # ============================================================
+    # DATA COLLECTION
+    # ============================================================
+    CANDLES_TO_FETCH = 500      # Fetch 500 candles for analysis
+
+    # ============================================================
+    # ALERT FREQUENCY CONTROL
+    # ============================================================
+    MIN_ALERT_INTERVAL = 300    # Minimum 5 minutes between alerts
+    MAX_DAILY_ALERTS = 20       # Maximum 20 alerts per day
+    CHECK_INTERVAL = 60         # Check for signals every 60 seconds
+
+    # ============================================================
+    # PRICE MOVEMENT ALERTS
+    # ============================================================
+    ENABLE_PRICE_ALERTS = True
+    PRICE_CHANGE_THRESHOLD_1H = 2.0   # Alert if price moves >2% in 1 hour
+    PRICE_CHANGE_THRESHOLD_4H = 5.0   # Alert if price moves >5% in 4 hours
+    PRICE_CHANGE_THRESHOLD_24H = 10.0 # Alert if price moves >10% in 24 hours
+
+    # ============================================================
+    # TECHNICAL INDICATOR ALERTS
+    # ============================================================
+    ENABLE_INDICATOR_ALERTS = True
+    RSI_OVERSOLD = 30           # RSI below 30 = oversold
+    RSI_OVERBOUGHT = 70         # RSI above 70 = overbought
+
+    # ============================================================
+    # DATABASE AND LOGGING
+    # ============================================================
+    DB_PATH = "alert_data.db"
     LOG_LEVEL = "INFO"
-    LOG_FILE = "trading_bot.log"
+    LOG_FILE = "alert_bot.log"
 
-    # Model Paths
+    # ============================================================
+    # MODEL PATHS
+    # ============================================================
     LSTM_MODEL_PATH = "models/lstm_model.h5"
     RF_MODEL_PATH = "models/rf_model.pkl"
     SCALER_PATH = "models/scaler.pkl"
+
+    # ============================================================
+    # ALERT MESSAGE TEMPLATES
+    # ============================================================
+    ALERT_EMOJI = {
+        'buy': '🟢',
+        'sell': '🔴',
+        'strong_buy': '💚',
+        'strong_sell': '❤️',
+        'neutral': '⚪',
+        'info': 'ℹ️',
+        'warning': '⚠️',
+        'rocket': '🚀',
+        'chart': '📊',
+        'money': '💰'
+    }
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
@@ -73,13 +99,16 @@ class Config:
     @classmethod
     def validate_config(cls) -> bool:
         """Validate critical configuration parameters"""
-        if not cls.DELTA_API_KEY or not cls.DELTA_API_SECRET:
-            raise ValueError("Delta Exchange API credentials not configured")
-
-        if cls.MAX_POSITION_SIZE_PCT <= 0 or cls.MAX_POSITION_SIZE_PCT > 1:
-            raise ValueError("MAX_POSITION_SIZE_PCT must be between 0 and 1")
+        if not cls.TELEGRAM_BOT_TOKEN:
+            raise ValueError("Telegram bot token not configured")
 
         if cls.SIGNAL_THRESHOLD < 0.5 or cls.SIGNAL_THRESHOLD > 0.95:
             raise ValueError("SIGNAL_THRESHOLD should be between 0.5 and 0.95")
+
+        if cls.BUY_SIGNAL_THRESHOLD < 0.5 or cls.BUY_SIGNAL_THRESHOLD > 1.0:
+            raise ValueError("BUY_SIGNAL_THRESHOLD should be between 0.5 and 1.0")
+
+        if cls.SELL_SIGNAL_THRESHOLD < 0.5 or cls.SELL_SIGNAL_THRESHOLD > 1.0:
+            raise ValueError("SELL_SIGNAL_THRESHOLD should be between 0.5 and 1.0")
 
         return True

@@ -1,15 +1,13 @@
 """
 Advanced Feature Engineering for Trading Signals
 Generates 50+ technical indicators for ML model training
+Fixed for Binance data and proper error handling
 """
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
+from typing import List
 import talib
-from scipy.stats import linregress
-import logging
-
-logger = logging.getLogger(__name__)
+from logger_config import logger
 
 
 class FeatureEngine:
@@ -18,339 +16,393 @@ class FeatureEngine:
     def __init__(self):
         self.feature_names = []
 
-    def prepare_data(self, candles: List[Dict]) -> pd.DataFrame:
-        """Convert raw candle data to pandas DataFrame"""
-        df = pd.DataFrame(candles)
+    def prepare_data_from_binance(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Prepare DataFrame from Binance data (already formatted)
 
-        # Ensure proper column names and types
-        if 'time' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['time'], unit='s')
-        else:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+        Args:
+            df: DataFrame with columns: timestamp, open, high, low, close, volume
 
-        # Rename columns to standard OHLCV format
-        column_mapping = {
-            'open': 'open',
-            'high': 'high',
-            'low': 'low',
-            'close': 'close',
-            'volume': 'volume'
-        }
-
-        for old_col, new_col in column_mapping.items():
-            if old_col in df.columns:
-                df[new_col] = pd.to_numeric(df[old_col], errors='coerce')
+        Returns:
+            Cleaned and validated DataFrame
+        """
+        df = df.copy()
 
         # Ensure all OHLCV columns are float64 (required by TA-Lib)
         for col in ['open', 'high', 'low', 'close', 'volume']:
             if col in df.columns:
-                df[col] = df[col].astype('float64')
+                df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
 
         # Drop any rows with NaN values in OHLCV columns
         df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
 
+        # Remove any infinite values
+        df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
         df = df.sort_values('timestamp').reset_index(drop=True)
+
+        logger.info(f"Prepared {len(df)} candles for feature engineering")
         return df
 
     def calculate_all_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all technical indicators and features"""
-        df = df.copy()
+        """Calculate all technical indicators and features with error handling"""
+        try:
+            df = df.copy()
 
-        # Price-based features
-        df = self._add_price_features(df)
+            # Validate minimum data length
+            if len(df) < 100:
+                logger.warning(f"Only {len(df)} candles available. Need at least 100 for accurate features.")
 
-        # Trend indicators
-        df = self._add_trend_indicators(df)
+            logger.info("Calculating features...")
 
-        # Momentum indicators
-        df = self._add_momentum_indicators(df)
+            # Price-based features
+            df = self._add_price_features(df)
+            logger.debug("✓ Price features added")
 
-        # Volatility indicators
-        df = self._add_volatility_indicators(df)
+            # Trend indicators
+            df = self._add_trend_indicators(df)
+            logger.debug("✓ Trend indicators added")
 
-        # Volume indicators
-        df = self._add_volume_indicators(df)
+            # Momentum indicators
+            df = self._add_momentum_indicators(df)
+            logger.debug("✓ Momentum indicators added")
 
-        # Support/Resistance levels
-        df = self._add_support_resistance(df)
+            # Volatility indicators
+            df = self._add_volatility_indicators(df)
+            logger.debug("✓ Volatility indicators added")
 
-        # Pattern recognition
-        df = self._add_patterns(df)
+            # Volume indicators
+            df = self._add_volume_indicators(df)
+            logger.debug("✓ Volume indicators added")
 
-        # Statistical features
-        df = self._add_statistical_features(df)
+            # Support/Resistance levels
+            df = self._add_support_resistance(df)
+            logger.debug("✓ Support/Resistance added")
 
-        # Market microstructure
-        df = self._add_microstructure_features(df)
+            # Pattern recognition
+            df = self._add_patterns(df)
+            logger.debug("✓ Patterns added")
 
-        # Drop NaN values
-        df = df.dropna()
+            # Statistical features
+            df = self._add_statistical_features(df)
+            logger.debug("✓ Statistical features added")
 
-        return df
+            # Market microstructure
+            df = self._add_microstructure_features(df)
+            logger.debug("✓ Microstructure features added")
+
+            # Drop NaN and infinite values
+            original_len = len(df)
+            df = df.replace([np.inf, -np.inf], np.nan)
+            df = df.dropna()
+
+            dropped = original_len - len(df)
+            if dropped > 0:
+                logger.info(f"Dropped {dropped} rows with NaN/Inf values")
+
+            # Get list of feature columns (exclude OHLCV and timestamp)
+            base_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            self.feature_names = [col for col in df.columns if col not in base_cols]
+
+            logger.info(f"✓ Generated {len(self.feature_names)} features from {len(df)} candles")
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error calculating features: {e}")
+            raise
 
     def _add_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Basic price-based features"""
-        # Price changes
-        df['returns'] = df['close'].pct_change()
-        df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
+        """Basic price-based features with error handling"""
+        try:
+            # Price changes
+            df['returns'] = df['close'].pct_change()
+            df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
 
-        # Price ranges
-        df['high_low_range'] = (df['high'] - df['low']) / df['close']
-        df['close_open_range'] = (df['close'] - df['open']) / df['open']
+            # Price ranges
+            df['high_low_range'] = (df['high'] - df['low']) / df['close']
+            df['close_open_range'] = (df['close'] - df['open']) / df['open']
 
-        # Typical price
-        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+            # Body and shadow ratios
+            df['body_size'] = abs(df['close'] - df['open']) / df['close']
+            df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['close']
+            df['lower_shadow'] = (df[['open', 'close']].min(axis=1) - df['low']) / df['close']
 
-        # Weighted close
-        df['weighted_close'] = (df['high'] + df['low'] + 2 * df['close']) / 4
+            # Price momentum (multiple periods)
+            for period in [5, 10, 20, 50]:
+                df[f'price_momentum_{period}'] = df['close'].pct_change(period)
 
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in price features: {e}")
+            return df
 
     def _add_trend_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Trend-following indicators"""
-        close = df['close'].values
+        """Moving averages and trend indicators"""
+        try:
+            close = df['close'].values
+            high = df['high'].values
+            low = df['low'].values
 
-        # Moving Averages
-        for period in [7, 14, 21, 50, 100, 200]:
-            df[f'sma_{period}'] = talib.SMA(close, timeperiod=period)
-            df[f'ema_{period}'] = talib.EMA(close, timeperiod=period)
+            # Moving Averages
+            for period in [7, 14, 21, 50, 100, 200]:
+                if len(df) >= period:
+                    df[f'sma_{period}'] = talib.SMA(close, timeperiod=period)
+                    df[f'ema_{period}'] = talib.EMA(close, timeperiod=period)
 
-        # Moving Average Crossovers
-        df['sma_7_14_cross'] = df['sma_7'] / df['sma_14'] - 1
-        df['sma_14_50_cross'] = df['sma_14'] / df['sma_50'] - 1
-        df['ema_7_21_cross'] = df['ema_7'] / df['ema_21'] - 1
+            # MACD
+            if len(df) >= 26:
+                macd, macd_signal, macd_hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+                df['macd'] = macd
+                df['macd_signal'] = macd_signal
+                df['macd_hist'] = macd_hist
 
-        # MACD
-        df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(
-            close, fastperiod=12, slowperiod=26, signalperiod=9
-        )
+            # ADX (Trend Strength)
+            if len(df) >= 14:
+                df['adx'] = talib.ADX(high, low, close, timeperiod=14)
+                df['plus_di'] = talib.PLUS_DI(high, low, close, timeperiod=14)
+                df['minus_di'] = talib.MINUS_DI(high, low, close, timeperiod=14)
 
-        # ADX (Average Directional Index)
-        df['adx'] = talib.ADX(df['high'].values, df['low'].values, close, timeperiod=14)
-        df['adx_trend'] = (df['adx'] > 25).astype(int)
+            # Parabolic SAR
+            if len(df) >= 5:
+                df['sar'] = talib.SAR(high, low, acceleration=0.02, maximum=0.2)
 
-        # Parabolic SAR
-        df['sar'] = talib.SAR(df['high'].values, df['low'].values)
-        df['sar_signal'] = (close > df['sar']).astype(int)
-
-        # Ichimoku Cloud components
-        high_9 = df['high'].rolling(window=9).max()
-        low_9 = df['low'].rolling(window=9).min()
-        df['tenkan_sen'] = (high_9 + low_9) / 2
-
-        high_26 = df['high'].rolling(window=26).max()
-        low_26 = df['low'].rolling(window=26).min()
-        df['kijun_sen'] = (high_26 + low_26) / 2
-
-        df['ichimoku_signal'] = (df['tenkan_sen'] > df['kijun_sen']).astype(int)
-
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in trend indicators: {e}")
+            return df
 
     def _add_momentum_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Momentum and oscillator indicators"""
-        close = df['close'].values
-        high = df['high'].values
-        low = df['low'].values
+        """RSI, Stochastic, and other momentum indicators"""
+        try:
+            close = df['close'].values
+            high = df['high'].values
+            low = df['low'].values
 
-        # RSI (Relative Strength Index)
-        for period in [7, 14, 21]:
-            df[f'rsi_{period}'] = talib.RSI(close, timeperiod=period)
+            # RSI (multiple periods)
+            for period in [9, 14, 21]:
+                if len(df) >= period:
+                    df[f'rsi_{period}'] = talib.RSI(close, timeperiod=period)
 
-        # Stochastic Oscillator
-        df['stoch_k'], df['stoch_d'] = talib.STOCH(
-            high, low, close,
-            fastk_period=14, slowk_period=3, slowd_period=3
-        )
+            # Stochastic Oscillator
+            if len(df) >= 14:
+                slowk, slowd = talib.STOCH(high, low, close, fastk_period=14, slowk_period=3, slowd_period=3)
+                df['stoch_k'] = slowk
+                df['stoch_d'] = slowd
 
-        # Stochastic RSI
-        df['stochrsi_k'], df['stochrsi_d'] = talib.STOCHRSI(
-            close, timeperiod=14, fastk_period=3, fastd_period=3
-        )
+            # Williams %R
+            if len(df) >= 14:
+                df['willr'] = talib.WILLR(high, low, close, timeperiod=14)
 
-        # CCI (Commodity Channel Index)
-        df['cci'] = talib.CCI(high, low, close, timeperiod=14)
+            # CCI (Commodity Channel Index)
+            if len(df) >= 14:
+                df['cci'] = talib.CCI(high, low, close, timeperiod=14)
 
-        # Williams %R
-        df['willr'] = talib.WILLR(high, low, close, timeperiod=14)
+            # MOM (Momentum)
+            if len(df) >= 10:
+                df['mom'] = talib.MOM(close, timeperiod=10)
 
-        # ROC (Rate of Change)
-        for period in [5, 10, 20]:
-            df[f'roc_{period}'] = talib.ROC(close, timeperiod=period)
+            # ROC (Rate of Change)
+            for period in [10, 20]:
+                if len(df) >= period:
+                    df[f'roc_{period}'] = talib.ROC(close, timeperiod=period)
 
-        # Money Flow Index
-        df['mfi'] = talib.MFI(high, low, close, df['volume'].values, timeperiod=14)
-
-        # Ultimate Oscillator
-        df['ultosc'] = talib.ULTOSC(high, low, close)
-
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in momentum indicators: {e}")
+            return df
 
     def _add_volatility_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Volatility and range indicators"""
-        close = df['close'].values
-        high = df['high'].values
-        low = df['low'].values
+        """Bollinger Bands, ATR, and volatility measures"""
+        try:
+            close = df['close'].values
+            high = df['high'].values
+            low = df['low'].values
 
-        # Bollinger Bands
-        for period in [20, 50]:
-            upper, middle, lower = talib.BBANDS(close, timeperiod=period, nbdevup=2, nbdevdn=2)
-            df[f'bb_upper_{period}'] = upper
-            df[f'bb_middle_{period}'] = middle
-            df[f'bb_lower_{period}'] = lower
-            df[f'bb_width_{period}'] = (upper - lower) / middle
-            df[f'bb_position_{period}'] = (close - lower) / (upper - lower)
+            # Bollinger Bands
+            if len(df) >= 20:
+                upper, middle, lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+                df['bb_upper'] = upper
+                df['bb_middle'] = middle
+                df['bb_lower'] = lower
+                df['bb_width'] = (upper - lower) / middle
+                df['bb_position'] = (close - lower) / (upper - lower)
 
-        # ATR (Average True Range)
-        for period in [7, 14, 21]:
-            df[f'atr_{period}'] = talib.ATR(high, low, close, timeperiod=period)
-            df[f'atr_pct_{period}'] = df[f'atr_{period}'] / close
+            # ATR (Average True Range)
+            for period in [7, 14, 21]:
+                if len(df) >= period:
+                    df[f'atr_{period}'] = talib.ATR(high, low, close, timeperiod=period)
 
-        # Keltner Channels
-        ema_20 = talib.EMA(close, timeperiod=20)
-        atr_20 = df['atr_14']
-        df['keltner_upper'] = ema_20 + 2 * atr_20
-        df['keltner_lower'] = ema_20 - 2 * atr_20
+            # NATR (Normalized ATR)
+            if len(df) >= 14:
+                df['natr'] = talib.NATR(high, low, close, timeperiod=14)
 
-        # Standard Deviation
-        df['std_20'] = df['close'].rolling(window=20).std()
-        df['volatility_ratio'] = df['std_20'] / df['close']
+            # Historical Volatility
+            for period in [10, 20, 30]:
+                if len(df) >= period:
+                    df[f'volatility_{period}'] = df['returns'].rolling(period).std() * np.sqrt(period)
 
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in volatility indicators: {e}")
+            return df
 
     def _add_volume_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Volume-based indicators"""
-        close = df['close'].values
-        high = df['high'].values
-        low = df['low'].values
-        volume = df['volume'].values
+        try:
+            close = df['close'].values
+            high = df['high'].values
+            low = df['low'].values
+            volume = df['volume'].values
 
-        # Volume moving averages
-        df['volume_sma_20'] = talib.SMA(volume, timeperiod=20)
-        df['volume_ratio'] = volume / df['volume_sma_20']
+            # Volume SMA
+            for period in [10, 20, 50]:
+                if len(df) >= period:
+                    df[f'volume_sma_{period}'] = talib.SMA(volume, timeperiod=period)
+                    df[f'volume_ratio_{period}'] = volume / df[f'volume_sma_{period}']
 
-        # On-Balance Volume
-        df['obv'] = talib.OBV(close, volume)
-        df['obv_sma'] = talib.SMA(df['obv'].values, timeperiod=20)
+            # OBV (On-Balance Volume)
+            if len(df) >= 1:
+                df['obv'] = talib.OBV(close, volume)
 
-        # Accumulation/Distribution
-        df['ad'] = talib.AD(high, low, close, volume)
+            # AD (Accumulation/Distribution)
+            if len(df) >= 1:
+                df['ad'] = talib.AD(high, low, close, volume)
 
-        # Chaikin Money Flow
-        df['cmf'] = talib.ADOSC(high, low, close, volume, fastperiod=3, slowperiod=10)
+            # ADOSC (Accumulation/Distribution Oscillator)
+            if len(df) >= 10:
+                df['adosc'] = talib.ADOSC(high, low, close, volume, fastperiod=3, slowperiod=10)
 
-        # Volume Price Trend
-        df['vpt'] = (df['close'].pct_change() * volume).cumsum()
+            # MFI (Money Flow Index)
+            if len(df) >= 14:
+                df['mfi'] = talib.MFI(high, low, close, volume, timeperiod=14)
 
-        # Force Index
-        df['force_index'] = df['close'].diff() * volume
-        df['force_index_13'] = df['force_index'].ewm(span=13).mean()
-
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in volume indicators: {e}")
+            return df
 
     def _add_support_resistance(self, df: pd.DataFrame) -> pd.DataFrame:
         """Support and resistance levels"""
-        # Pivot points
-        df['pivot'] = (df['high'].shift(1) + df['low'].shift(1) + df['close'].shift(1)) / 3
-        df['r1'] = 2 * df['pivot'] - df['low'].shift(1)
-        df['s1'] = 2 * df['pivot'] - df['high'].shift(1)
-        df['r2'] = df['pivot'] + (df['high'].shift(1) - df['low'].shift(1))
-        df['s2'] = df['pivot'] - (df['high'].shift(1) - df['low'].shift(1))
+        try:
+            # Rolling highs and lows
+            for period in [20, 50, 100]:
+                if len(df) >= period:
+                    df[f'rolling_high_{period}'] = df['high'].rolling(period).max()
+                    df[f'rolling_low_{period}'] = df['low'].rolling(period).min()
+                    df[f'distance_to_high_{period}'] = (df[f'rolling_high_{period}'] - df['close']) / df['close']
+                    df[f'distance_to_low_{period}'] = (df['close'] - df[f'rolling_low_{period}']) / df['close']
 
-        # Distance to pivot levels
-        df['dist_to_pivot'] = (df['close'] - df['pivot']) / df['close']
-        df['dist_to_r1'] = (df['r1'] - df['close']) / df['close']
-        df['dist_to_s1'] = (df['close'] - df['s1']) / df['close']
-
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in support/resistance: {e}")
+            return df
 
     def _add_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Candlestick pattern recognition"""
-        open_p = df['open'].values
-        high = df['high'].values
-        low = df['low'].values
-        close = df['close'].values
+        try:
+            open_price = df['open'].values
+            high = df['high'].values
+            low = df['low'].values
+            close = df['close'].values
 
-        # Major candlestick patterns
-        df['cdl_doji'] = talib.CDLDOJI(open_p, high, low, close)
-        df['cdl_hammer'] = talib.CDLHAMMER(open_p, high, low, close)
-        df['cdl_shooting_star'] = talib.CDLSHOOTINGSTAR(open_p, high, low, close)
-        df['cdl_engulfing'] = talib.CDLENGULFING(open_p, high, low, close)
-        df['cdl_morning_star'] = talib.CDLMORNINGSTAR(open_p, high, low, close)
-        df['cdl_evening_star'] = talib.CDLEVENINGSTAR(open_p, high, low, close)
-        df['cdl_harami'] = talib.CDLHARAMI(open_p, high, low, close)
+            # Major candlestick patterns
+            patterns = {
+                'doji': talib.CDLDOJI,
+                'hammer': talib.CDLHAMMER,
+                'shooting_star': talib.CDLSHOOTINGSTAR,
+                'engulfing': talib.CDLENGULFING,
+                'harami': talib.CDLHARAMI,
+                'morning_star': talib.CDLMORNINGSTAR,
+                'evening_star': talib.CDLEVENINGSTAR,
+            }
 
-        return df
+            for name, func in patterns.items():
+                try:
+                    df[f'pattern_{name}'] = func(open_price, high, low, close)
+                except:
+                    pass
+
+            return df
+        except Exception as e:
+            logger.warning(f"Error in pattern recognition: {e}")
+            return df
 
     def _add_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Statistical and derived features"""
-        # Linear regression slope
-        def calculate_slope(series, window):
-            slopes = []
-            for i in range(len(series)):
-                if i < window:
-                    slopes.append(np.nan)
-                else:
-                    y = series[i-window:i].values
-                    x = np.arange(window)
-                    slope, _, _, _, _ = linregress(x, y)
-                    slopes.append(slope)
-            return slopes
+        """Statistical measures"""
+        try:
+            # Rolling statistics
+            for period in [10, 20, 50]:
+                if len(df) >= period:
+                    df[f'skew_{period}'] = df['returns'].rolling(period).skew()
+                    df[f'kurtosis_{period}'] = df['returns'].rolling(period).kurt()
 
-        df['price_slope_10'] = calculate_slope(df['close'], 10)
-        df['price_slope_20'] = calculate_slope(df['close'], 20)
+            # Z-score
+            for period in [20, 50]:
+                if len(df) >= period:
+                    mean = df['close'].rolling(period).mean()
+                    std = df['close'].rolling(period).std()
+                    df[f'zscore_{period}'] = (df['close'] - mean) / std
 
-        # Skewness and Kurtosis
-        df['returns_skew_20'] = df['returns'].rolling(window=20).skew()
-        df['returns_kurt_20'] = df['returns'].rolling(window=20).kurt()
-
-        # Autocorrelation
-        df['autocorr_5'] = df['returns'].rolling(window=20).apply(
-            lambda x: x.autocorr(lag=5) if len(x) > 5 else np.nan
-        )
-
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in statistical features: {e}")
+            return df
 
     def _add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Market microstructure features"""
-        # Spread
-        df['spread'] = df['high'] - df['low']
-        df['spread_pct'] = df['spread'] / df['close']
+        try:
+            # Spread measures
+            df['spread'] = (df['high'] - df['low']) / df['close']
 
-        # Upper/Lower wick ratios
-        df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
-        df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
-        df['upper_wick_ratio'] = df['upper_wick'] / df['spread']
-        df['lower_wick_ratio'] = df['lower_wick'] / df['spread']
+            # Price pressure
+            df['price_pressure'] = (df['close'] - df['open']) / (df['high'] - df['low'] + 1e-10)
 
-        # Body size
-        df['body'] = abs(df['close'] - df['open'])
-        df['body_ratio'] = df['body'] / df['spread']
+            # Volume price trend
+            if len(df) >= 2:
+                price_change = df['close'].pct_change()
+                df['vpt'] = (price_change * df['volume']).cumsum()
 
-        return df
+            return df
+        except Exception as e:
+            logger.warning(f"Error in microstructure features: {e}")
+            return df
 
-    def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
-        """Get list of feature columns (excluding OHLCV and timestamp)"""
-        exclude_cols = ['timestamp', 'time', 'open', 'high', 'low', 'close', 'volume']
-        return [col for col in df.columns if col not in exclude_cols]
+    def get_feature_names(self) -> List[str]:
+        """Get list of all feature names"""
+        return self.feature_names
 
-    def create_sequences(self, df: pd.DataFrame, lookback: int = 60) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Create sequences for LSTM model
 
-        Returns:
-            X: Input sequences (samples, lookback, features)
-            y: Target values (samples,) - 1 if price goes up, 0 if down
-        """
-        feature_cols = self.get_feature_columns(df)
-        data = df[feature_cols].values
+if __name__ == "__main__":
+    # Test feature engineering
+    from binance_data_fetcher import BinanceDataFetcher
 
-        X, y = [], []
+    print("=" * 70)
+    print("  Testing Feature Engineering")
+    print("=" * 70)
 
-        for i in range(lookback, len(data)):
-            X.append(data[i-lookback:i])
+    # Fetch data
+    print("\n1. Fetching data from Binance...")
+    fetcher = BinanceDataFetcher()
+    klines = fetcher.get_klines("BTCUSDT", "5m", 500)
+    df = fetcher.klines_to_dataframe(klines)
+    print(f"   ✓ Fetched {len(df)} candles")
 
-            # Target: 1 if next candle closes higher, 0 otherwise
-            future_return = (df['close'].iloc[i] - df['close'].iloc[i-1]) / df['close'].iloc[i-1]
-            y.append(1 if future_return > 0 else 0)
+    # Calculate features
+    print("\n2. Calculating features...")
+    engine = FeatureEngine()
+    df_prepared = engine.prepare_data_from_binance(df)
+    df_features = engine.calculate_all_features(df_prepared)
 
-        return np.array(X), np.array(y)
+    print(f"   ✓ Generated {len(engine.get_feature_names())} features")
+    print(f"   ✓ Final dataset: {len(df_features)} rows × {len(df_features.columns)} columns")
+
+    # Show sample
+    print("\n3. Sample feature values (latest candle):")
+    features = engine.get_feature_names()[:10]  # Show first 10 features
+    for feat in features:
+        print(f"   {feat:.<30} {df_features[feat].iloc[-1]:.4f}")
+
+    print("\n" + "=" * 70)
+    print("  Feature engineering test completed!")
+    print("=" * 70)
