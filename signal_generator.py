@@ -214,22 +214,30 @@ class SignalGenerator:
         rf_pred_proba = self.rf_model.predict_proba(X_rf)[0][1]
 
         # Ensemble prediction (weighted average)
+        # Score represents probability of UPWARD movement (0 = strong down, 1 = strong up)
         ensemble_score = 0.6 * lstm_pred + 0.4 * rf_pred_proba
 
-        # Determine signal
+        # Determine signal with clear thresholds
         if ensemble_score >= Config.BUY_SIGNAL_THRESHOLD:
+            # High score (>= 70%) = Strong upward probability = BUY
             signal = 'BUY'
+            signal_confidence = ensemble_score  # 70-100%
         elif ensemble_score <= (1 - Config.SELL_SIGNAL_THRESHOLD):
+            # Low score (<= 30%) = Strong downward probability = SELL
             signal = 'SELL'
+            signal_confidence = 1 - ensemble_score  # Convert to downward confidence (70-100%)
         else:
+            # Middle range (30-70%) = Uncertain = NEUTRAL
             signal = 'NEUTRAL'
+            signal_confidence = 0.5  # Neutral confidence
 
         # Get current market data
         latest = df.iloc[-1]
 
         result = {
             'signal': signal,
-            'confidence': float(ensemble_score),
+            'confidence': float(signal_confidence),  # Now shows actual signal strength
+            'ensemble_score': float(ensemble_score),  # Raw score (0-1)
             'lstm_score': float(lstm_pred),
             'rf_score': float(rf_pred_proba),
             'price': float(latest['close']),
@@ -239,7 +247,7 @@ class SignalGenerator:
             'bb_position': float(latest.get('bb_position', 0.5))
         }
 
-        logger.info(f"Signal: {signal} | Confidence: {ensemble_score:.2%} | Price: ${result['price']:,.2f}")
+        logger.info(f"Signal: {signal} | Confidence: {signal_confidence:.2%} | Ensemble: {ensemble_score:.2%} | Price: ${result['price']:,.2f}")
 
         return result
 
