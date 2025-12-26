@@ -176,24 +176,29 @@ class MT5BrokerAdapter:
             return None
     
     def _wait_for_signal_result(self, signal_id: str, timeout: int = 30) -> Optional[Dict]:
-        """Wait for signal execution result"""
+        """Wait for signal execution result from EA"""
         start = time.time()
         
         while (time.time() - start) < timeout:
             try:
-                response = requests.get(f"{self.api_url}/api/status", timeout=5)
+                # Check the signal result endpoint
+                response = requests.get(
+                    f"{self.api_url}/api/signal_status/{signal_id}", 
+                    timeout=5
+                )
                 if response.status_code == 200:
-                    # Check if signal was executed by polling status
-                    # The actual result tracking is done server-side
-                    pass
-            except:
-                pass
+                    data = response.json()
+                    if data.get('executed'):
+                        result = data.get('result', {})
+                        return result
+            except Exception as e:
+                logger.debug(f"Waiting for signal result: {e}")
             
             time.sleep(1)
         
-        # For now, assume success if no error within timeout
-        # In production, implement proper result tracking
-        return {'success': True, 'ticket': int(time.time() * 1000) % 1000000000}
+        # Timeout - signal was not executed by EA
+        logger.warning(f"Signal {signal_id} timed out - EA did not execute within {timeout}s")
+        return None
     
     def modify_position(self, ticket: int, sl: float = None, tp: float = None) -> bool:
         """Modify position SL/TP"""

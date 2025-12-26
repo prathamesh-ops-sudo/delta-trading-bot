@@ -190,6 +190,38 @@ def signal_result():
     return jsonify({'status': 'ok'})
 
 
+@app.route('/api/signal_status/<signal_id>', methods=['GET'])
+def get_signal_status(signal_id):
+    """Check status of a specific signal"""
+    with bridge_state.lock:
+        # Check pending signals
+        for sig in bridge_state.pending_signals:
+            if sig.id == signal_id:
+                return jsonify({
+                    'found': True,
+                    'executed': False,
+                    'pending': True,
+                    'result': None
+                })
+        
+        # Check executed signals
+        for sig in bridge_state.executed_signals:
+            if sig.id == signal_id:
+                return jsonify({
+                    'found': True,
+                    'executed': True,
+                    'pending': False,
+                    'result': sig.result
+                })
+    
+    return jsonify({
+        'found': False,
+        'executed': False,
+        'pending': False,
+        'result': None
+    })
+
+
 @app.route('/api/positions', methods=['POST'])
 def update_positions():
     """EA sends position updates"""
