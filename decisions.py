@@ -670,9 +670,16 @@ class VeteranTraderDecisionEngine:
         trading_params = agentic_system.get_trading_parameters()
         aggression = trading_params.get('aggression_level', 0.5)
         
-        # 9. Calculate entry, SL, TP
+        # 9. Calculate entry, SL, TP with minimum stop level enforcement
         entry_price = current_price
-        sl_distance = atr * 2  # 2 ATR stop loss
+        
+        # Calculate pip value and minimum stop distance
+        pip_size = 0.01 if 'JPY' in symbol else 0.0001
+        min_stop_pips = 30  # Minimum 30 pips for safety (broker usually requires 10-20)
+        min_stop_distance = min_stop_pips * pip_size
+        
+        # Use ATR-based stop but enforce minimum
+        sl_distance = max(atr * 2, min_stop_distance)
         tp_distance = sl_distance * max(self.min_rr_ratio, 2.0)  # At least 1:2 RR
         
         if direction == TradeDirection.LONG:
