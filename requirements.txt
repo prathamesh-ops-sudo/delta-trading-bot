@@ -46,6 +46,7 @@ botocore>=1.24.0
 fastapi>=0.75.0
 uvicorn>=0.17.0
 pydantic>=1.9.0
+flask>=2.0.0
 
 # Monitoring and Logging
 psutil>=5.9.0

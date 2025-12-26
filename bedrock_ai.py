@@ -49,7 +49,7 @@ class BedrockAI:
         self.region = region
         self.client = None
         self.model_id = 'anthropic.claude-3-sonnet-20240229-v1:0'
-        self.fallback_model_id = 'anthropic.claude-instant-v1'
+        self.fallback_model_id = 'anthropic.claude-3-haiku-20240307-v1:0'
         self.is_available = False
         self._initialize_client()
         
@@ -181,8 +181,14 @@ Be conservative and prioritize capital preservation. Only recommend trades with 
     def _invoke_fallback_model(self, prompt: str) -> str:
         """Use fallback model if primary is unavailable"""
         body = json.dumps({
-            "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
-            "max_tokens_to_sample": 1024,
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
             "temperature": 0.3
         })
         
@@ -194,7 +200,7 @@ Be conservative and prioritize capital preservation. Only recommend trades with 
         )
         
         response_body = json.loads(response['body'].read())
-        return response_body['completion']
+        return response_body['content'][0]['text']
     
     def _parse_analysis_response(self, response: str, symbol: str) -> AIAnalysis:
         """Parse Claude's response into structured analysis"""

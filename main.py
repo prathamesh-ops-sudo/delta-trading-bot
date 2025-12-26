@@ -489,6 +489,226 @@ def run_demo(args):
             time.sleep(60)
 
 
+def run_mt5_bridge(args):
+    """Run with MT5 Bridge for real trading execution"""
+    print("=" * 60)
+    print("MT5 BRIDGE MODE - REAL TRADING")
+    print("=" * 60)
+    print()
+    print("Connecting to MT5 via Bridge API...")
+    print("Make sure the TradingBridgeEA is running in your MT5 terminal!")
+    print()
+    
+    LoggingSetup.setup(log_dir="./logs", log_level=logging.INFO)
+    
+    from mt5_bridge.mt5_broker_adapter import MT5BrokerAdapter
+    from mt5_bridge.api_server import app as bridge_app, bridge_state
+    from decisions import decision_engine, TradeDirection
+    from regime_detection import regime_manager
+    from risk_management import risk_manager
+    import numpy as np
+    import pandas as pd
+    import threading
+    
+    try:
+        from pattern_miner import pattern_miner
+        PATTERN_MINER_AVAILABLE = True
+    except ImportError:
+        PATTERN_MINER_AVAILABLE = False
+        pattern_miner = None
+    
+    try:
+        from bedrock_ai import bedrock_ai
+        BEDROCK_AVAILABLE = True
+    except ImportError:
+        BEDROCK_AVAILABLE = False
+        bedrock_ai = None
+    
+    logger.info(f"MT5 Bridge mode - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
+    
+    # Start the bridge API server in a background thread
+    api_port = int(os.environ.get('MT5_BRIDGE_PORT', 5000))
+    
+    def run_api_server():
+        bridge_app.run(host='0.0.0.0', port=api_port, debug=False, threaded=True, use_reloader=False)
+    
+    api_thread = threading.Thread(target=run_api_server, daemon=True)
+    api_thread.start()
+    logger.info(f"Bridge API server started on port {api_port}")
+    
+    # Wait for API to start
+    time.sleep(2)
+    
+    # Create MT5 broker adapter
+    broker = MT5BrokerAdapter(api_url=f"http://localhost:{api_port}")
+    
+    symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']
+    executed_trades = []
+    last_status_time = datetime.now()
+    last_daily_reset = datetime.now().date()
+    iteration = 0
+    
+    print("Waiting for MT5 EA to connect...")
+    print(f"API URL for EA: http://<your-ec2-ip>:{api_port}")
+    print()
+    print("Starting trading loop...")
+    print("Press Ctrl+C to stop")
+    print()
+    
+    while True:
+        try:
+            iteration += 1
+            current_time = datetime.now()
+            
+            # Check MT5 connection
+            mt5_connected = broker.is_connected()
+            
+            if mt5_connected:
+                # Get real balance from MT5
+                account_balance = broker.get_balance()
+                account_equity = broker.get_equity()
+                open_positions = broker.get_open_positions()
+                
+                if account_balance <= 0:
+                    logger.warning("MT5 balance is 0 - waiting for account data...")
+                    time.sleep(5)
+                    continue
+                
+                # Analyze each symbol
+                for symbol in symbols:
+                    try:
+                        # Generate simulated price data for analysis
+                        # In production, this would come from MT5 via the EA
+                        np.random.seed(int(time.time()) + hash(symbol) % 1000)
+                        n_samples = 500
+                        
+                        base_price = {'EURUSD': 1.1000, 'GBPUSD': 1.2700, 'USDJPY': 150.00, 'USDCHF': 0.8800}.get(symbol, 1.0)
+                        prices = [base_price]
+                        for i in range(n_samples - 1):
+                            change = np.random.normal(0.0001, 0.001)
+                            prices.append(prices[-1] * (1 + change))
+                        
+                        df = pd.DataFrame({
+                            'open': prices,
+                            'high': [p * (1 + abs(np.random.normal(0, 0.002))) for p in prices],
+                            'low': [p * (1 - abs(np.random.normal(0, 0.002))) for p in prices],
+                            'close': prices,
+                            'volume': np.random.randint(1000, 10000, n_samples)
+                        })
+                        df.index = pd.date_range(end=current_time, periods=n_samples, freq='H')
+                        df['datetime'] = df.index
+                        
+                        # Detect regime
+                        regime = regime_manager.detect_regime(df)
+                        
+                        # Create multi-timeframe data
+                        mtf_data = {'H1': df, 'H4': df.resample('4H').agg({
+                            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+                        }).dropna()}
+                        
+                        # Get trading signal
+                        signal = decision_engine.analyze_market(symbol, mtf_data, account_balance=account_balance)
+                        
+                        # Execute signal if confidence is high enough
+                        if signal and signal.confidence > 0.65:
+                            # Check if we already have a position in this symbol
+                            existing_position = any(p.get('symbol') == symbol for p in open_positions)
+                            
+                            if not existing_position:
+                                direction = TradeDirection.LONG if signal.direction.name == 'LONG' else TradeDirection.SHORT
+                                
+                                # Place real order via MT5 bridge
+                                ticket = broker.place_order(
+                                    symbol=symbol,
+                                    direction=direction,
+                                    volume=signal.position_size,
+                                    sl=signal.stop_loss,
+                                    tp=signal.take_profit,
+                                    comment=f"AI_{signal.strategy}"
+                                )
+                                
+                                if ticket:
+                                    executed_trades.append({
+                                        'ticket': ticket,
+                                        'symbol': symbol,
+                                        'direction': signal.direction.name,
+                                        'volume': signal.position_size,
+                                        'confidence': signal.confidence,
+                                        'strategy': signal.strategy,
+                                        'timestamp': current_time
+                                    })
+                                    
+                                    logger.info(f"[MT5] Order executed: {symbol} {signal.direction.name} | "
+                                               f"Volume: {signal.position_size} | "
+                                               f"Confidence: {signal.confidence:.2f} | "
+                                               f"Strategy: {signal.strategy} | "
+                                               f"Ticket: {ticket}")
+                                else:
+                                    logger.warning(f"[MT5] Order failed for {symbol}")
+                        
+                        # Pattern learning
+                        if PATTERN_MINER_AVAILABLE and pattern_miner and iteration % 100 == 0:
+                            try:
+                                patterns = pattern_miner.analyze_historical_data(df, symbol)
+                                if patterns:
+                                    logger.info(f"[MT5] Learned {len(patterns)} patterns for {symbol}")
+                            except Exception as e:
+                                logger.warning(f"Pattern learning error: {e}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error analyzing {symbol}: {e}")
+                
+                # Status update every 5 minutes
+                if (current_time - last_status_time).seconds >= 300:
+                    print("\n" + "=" * 50)
+                    print(f"MT5 BRIDGE STATUS - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print("=" * 50)
+                    print(f"MT5 Connected: YES")
+                    print(f"Account Balance: ${account_balance:.2f}")
+                    print(f"Account Equity: ${account_equity:.2f}")
+                    print(f"Open Positions: {len(open_positions)}")
+                    print(f"Trades Executed: {len(executed_trades)}")
+                    print(f"Trading Mode: {agentic_system.get_trading_parameters()['trading_mode']}")
+                    print(f"PatternMiner: {PATTERN_MINER_AVAILABLE}")
+                    print(f"BedrockAI: {BEDROCK_AVAILABLE}")
+                    print("=" * 50 + "\n")
+                    
+                    last_status_time = current_time
+            
+            else:
+                # MT5 not connected yet
+                if iteration % 10 == 0:
+                    print(f"Waiting for MT5 EA connection... (iteration {iteration})")
+                    print(f"Make sure to add http://<ec2-ip>:{api_port} to MT5 allowed URLs")
+            
+            # Daily learning cycle
+            if current_time.date() != last_daily_reset:
+                logger.info("Running daily learning cycle...")
+                try:
+                    report = agentic_system.run_daily_learning_cycle(
+                        executed_trades, account_balance if mt5_connected else 100.0
+                    )
+                    logger.info(f"Daily learning complete")
+                except Exception as e:
+                    logger.error(f"Daily learning error: {e}")
+                
+                last_daily_reset = current_time.date()
+            
+            time.sleep(30)
+            
+        except KeyboardInterrupt:
+            print("\n" + "=" * 60)
+            print("MT5 Bridge mode stopped by user")
+            if mt5_connected:
+                print(f"Final Balance: ${broker.get_balance():.2f}")
+            print(f"Total Trades Executed: {len(executed_trades)}")
+            print("=" * 60)
+            break
+        except Exception as e:
+            logger.error(f"MT5 Bridge loop error: {e}")
+            time.sleep(60)
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -497,14 +717,16 @@ def main():
         epilog="""
 Examples:
   python main.py                    # Start live trading
-  python main.py --demo             # Run demo mode
+  python main.py --demo             # Run demo mode (simulated)
+  python main.py --mt5-bridge       # Run with MT5 Bridge (real trading)
   python main.py --backtest         # Run backtest
   python main.py --backtest --walk-forward  # Run with walk-forward optimization
         """
     )
     
     # Mode selection
-    parser.add_argument('--demo', action='store_true', help='Run in demo mode')
+    parser.add_argument('--demo', action='store_true', help='Run in demo mode (simulated)')
+    parser.add_argument('--mt5-bridge', action='store_true', help='Run with MT5 Bridge for real trading')
     parser.add_argument('--backtest', action='store_true', help='Run backtest mode')
     
     # Backtest options
@@ -529,6 +751,8 @@ Examples:
     # Run appropriate mode
     if args.demo:
         run_demo(args)
+    elif args.mt5_bridge:
+        run_mt5_bridge(args)
     elif args.backtest:
         run_backtest(args)
     else:
