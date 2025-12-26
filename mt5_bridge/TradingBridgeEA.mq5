@@ -260,13 +260,35 @@ void ExecuteSignal(string signalJson)
       return;
    }
    
-   // Get current price
+   // Get current price and symbol info
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   long stopLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minStopDistance = stopLevel * point;
+   
+   // Normalize SL/TP to symbol digits
+   sl = NormalizeDouble(sl, digits);
+   tp = NormalizeDouble(tp, digits);
+   
+   // Validate and adjust SL/TP if too close to price
+   if(action == "buy" && sl > 0)
+   {
+      double minSL = NormalizeDouble(ask - minStopDistance, digits);
+      if(sl > minSL) sl = minSL;
+   }
+   else if(action == "sell" && sl > 0)
+   {
+      double minSL = NormalizeDouble(bid + minStopDistance, digits);
+      if(sl < minSL) sl = minSL;
+   }
    
    bool success = false;
    ulong ticket = 0;
    string errorMsg = "";
+   
+   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, " stopLevel=", stopLevel);
    
    if(action == "buy")
    {
