@@ -8,11 +8,12 @@ import os
 import json
 import uuid
 import logging
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 from threading import Lock
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,21 +67,24 @@ class MT5BridgeState:
             self.pending_signals.append(signal)
             logger.info(f"Signal added: {signal.id} - {signal.symbol} {signal.action} {signal.volume} lots")
     
-    def get_pending_signals(self) -> List[Dict]:
+    def get_pending_signals(self) -> List[OrderedDict]:
+        """Get pending signals with id first for EA parsing compatibility"""
         with self.lock:
             signals = []
             for sig in self.pending_signals:
                 if not sig.executed:
-                    signals.append({
-                        'id': sig.id,
-                        'symbol': sig.symbol,
-                        'action': sig.action,
-                        'volume': sig.volume,
-                        'sl': sig.sl,
-                        'tp': sig.tp,
-                        'ticket': sig.ticket,
-                        'comment': sig.comment
-                    })
+                    # IMPORTANT: id must be first key for EA JSON parsing
+                    # Using OrderedDict to preserve key order
+                    signals.append(OrderedDict([
+                        ('id', sig.id),
+                        ('symbol', sig.symbol),
+                        ('action', sig.action),
+                        ('volume', sig.volume),
+                        ('sl', sig.sl),
+                        ('tp', sig.tp),
+                        ('ticket', sig.ticket),
+                        ('comment', sig.comment)
+                    ]))
             return signals
     
     def mark_signal_executed(self, signal_id: str, success: bool, ticket: int, error: str):
@@ -151,7 +155,10 @@ def get_account():
 def get_signals():
     """EA polls this endpoint for pending trade signals"""
     signals = bridge_state.get_pending_signals()
-    return jsonify({'signals': signals})
+    # Use json.dumps with sort_keys=False to preserve key order for EA parsing
+    # EA expects {"id":... to be first in each signal object
+    response_data = json.dumps({'signals': signals}, sort_keys=False, separators=(',', ':'))
+    return Response(response_data, mimetype='application/json')
 
 
 @app.route('/api/signals', methods=['POST'])
