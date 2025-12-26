@@ -18,6 +18,20 @@ from config import config
 from risk_management import risk_manager, RiskMetrics
 from regime_detection import regime_manager, MarketRegime
 
+try:
+    from pattern_miner import pattern_miner
+    PATTERN_MINER_AVAILABLE = True
+except ImportError:
+    PATTERN_MINER_AVAILABLE = False
+    pattern_miner = None
+
+try:
+    from bedrock_ai import bedrock_ai
+    BEDROCK_AVAILABLE = True
+except ImportError:
+    BEDROCK_AVAILABLE = False
+    bedrock_ai = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -605,7 +619,8 @@ class AgenticLearningSystem:
             logger.error(f"Could not save learning state: {e}")
     
     def run_daily_learning_cycle(self, trades_today: List[Dict],
-                                  account_balance: float) -> DailyReport:
+                                  account_balance: float,
+                                  historical_data: Dict = None) -> DailyReport:
         """Run the daily learning cycle - called at end of each trading day"""
         logger.info("Starting daily learning cycle...")
         
@@ -635,29 +650,68 @@ class AgenticLearningSystem:
         
         logger.info(f"Generated {len(new_insights)} new insights")
         
-        # 4. Update adaptive parameters based on performance
+        # 4. Learn time-based patterns from historical data (human-like pattern recognition)
+        if PATTERN_MINER_AVAILABLE and pattern_miner and historical_data:
+            try:
+                total_patterns = 0
+                for symbol, df in historical_data.items():
+                    if df is not None and not df.empty:
+                        patterns = pattern_miner.analyze_historical_data(df, symbol)
+                        total_patterns += len(patterns)
+                logger.info(f"Pattern learning complete: discovered {total_patterns} time-based patterns")
+                
+                pattern_report = pattern_miner.generate_pattern_report()
+                logger.info(f"Pattern Report:\n{pattern_report}")
+            except Exception as e:
+                logger.error(f"Pattern learning error: {e}")
+        
+        # 5. Get AI-powered daily insights from Bedrock
+        ai_insights = []
+        if BEDROCK_AVAILABLE and bedrock_ai:
+            try:
+                daily_stats = {
+                    'total_trades': daily_report.total_trades,
+                    'win_rate': daily_report.win_rate,
+                    'total_profit': daily_report.total_profit,
+                    'max_drawdown': daily_report.max_drawdown,
+                    'best_trade': daily_report.best_trade.profit if daily_report.best_trade else 0,
+                    'worst_trade': daily_report.worst_trade.profit if daily_report.worst_trade else 0
+                }
+                pattern_descriptions = []
+                if PATTERN_MINER_AVAILABLE and pattern_miner:
+                    active_patterns = pattern_miner.get_all_active_patterns()
+                    pattern_descriptions = [p.description for p in active_patterns[:5]]
+                
+                ai_insights = bedrock_ai.generate_daily_insights(daily_stats, pattern_descriptions)
+                logger.info(f"AI-generated insights: {ai_insights}")
+            except Exception as e:
+                logger.error(f"AI insights generation error: {e}")
+        
+        # 6. Update adaptive parameters based on performance
         self._update_adaptive_params(daily_report, analyzed_trades)
         
-        # 5. Adjust trading mode based on drawdown
+        # 7. Adjust trading mode based on drawdown
         self._adjust_trading_mode(account_balance)
         
-        # 6. Update strategy weights
+        # 8. Update strategy weights
         self._update_strategy_weights(daily_report)
         
-        # 7. Store daily performance
+        # 9. Store daily performance
         self.daily_performance.append({
             'date': today.isoformat(),
             'profit': daily_report.total_profit,
             'win_rate': daily_report.win_rate,
             'trades': daily_report.total_trades,
-            'mode': self.trading_mode
+            'mode': self.trading_mode,
+            'ai_insights': ai_insights
         })
         
-        # 8. Save state
+        # 10. Save state
         self._save_state()
         
         logger.info(f"Daily learning cycle complete. Mode: {self.trading_mode}, "
-                   f"Insights: {len(self.insight_engine.insights)}")
+                   f"Insights: {len(self.insight_engine.insights)}, "
+                   f"PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
         
         return daily_report
     

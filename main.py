@@ -309,19 +309,17 @@ def run_backtest(args):
 
 
 def run_demo(args):
-    """Run demo mode with simulated trading"""
+    """Run demo mode with continuous simulated trading (24/7)"""
     print("=" * 60)
-    print("DEMO MODE")
+    print("DEMO MODE - CONTINUOUS TRADING SIMULATION")
     print("=" * 60)
     print()
     print("Running in demo mode with simulated data...")
-    print("This demonstrates the system's capabilities without live trading.")
+    print("This simulates 24/7 trading without live execution.")
     print()
     
-    # Setup logging
     LoggingSetup.setup(log_dir="./logs", log_level=logging.INFO)
     
-    # Import demo components
     from decisions import decision_engine, TradeDirection
     from regime_detection import regime_manager
     from risk_management import risk_manager
@@ -329,95 +327,166 @@ def run_demo(args):
     import numpy as np
     import pandas as pd
     
-    # Generate sample data
-    print("Generating sample market data...")
-    np.random.seed(42)
-    n_samples = 500
+    try:
+        from pattern_miner import pattern_miner
+        PATTERN_MINER_AVAILABLE = True
+    except ImportError:
+        PATTERN_MINER_AVAILABLE = False
+        pattern_miner = None
     
-    prices = [1.1000]
-    for i in range(n_samples - 1):
-        change = np.random.normal(0.0001, 0.001)
-        prices.append(prices[-1] * (1 + change))
+    try:
+        from bedrock_ai import bedrock_ai
+        BEDROCK_AVAILABLE = True
+    except ImportError:
+        BEDROCK_AVAILABLE = False
+        bedrock_ai = None
     
-    df = pd.DataFrame({
-        'open': prices,
-        'high': [p * (1 + abs(np.random.normal(0, 0.002))) for p in prices],
-        'low': [p * (1 - abs(np.random.normal(0, 0.002))) for p in prices],
-        'close': prices,
-        'volume': np.random.randint(1000, 10000, n_samples)
-    })
-    df.index = pd.date_range(start='2024-01-01', periods=n_samples, freq='H')
+    logger.info(f"Demo mode started - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
     
-    # Test regime detection
-    print("\n--- Regime Detection ---")
-    regime = regime_manager.detect_regime(df)
-    if regime:
-        print(f"Current Regime: {regime.name}")
-        print(f"Probability: {regime.probability:.2f}")
-        print(f"Volatility: {regime.volatility:.4f}")
-        print(f"Trend Strength: {regime.trend_strength:.2f}")
-        print(f"Recommended Strategies: {regime.recommended_strategies}")
+    symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']
+    account_balance = 100.0
+    simulated_trades = []
+    last_status_time = datetime.now()
+    last_daily_reset = datetime.now().date()
+    iteration = 0
     
-    # Test decision engine
-    print("\n--- Decision Engine ---")
-    mtf_data = {'H1': df, 'H4': df.resample('4H').agg({
-        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
-    }).dropna()}
+    print("Starting continuous demo trading loop...")
+    print("Press Ctrl+C to stop")
+    print()
     
-    signal = decision_engine.analyze_market('EURUSD', mtf_data, account_balance=100)
-    if signal:
-        print(f"Signal Generated:")
-        print(f"  Direction: {signal.direction.name}")
-        print(f"  Confidence: {signal.confidence:.2f}")
-        print(f"  Entry: {signal.entry_price:.5f}")
-        print(f"  Stop Loss: {signal.stop_loss:.5f}")
-        print(f"  Take Profit: {signal.take_profit:.5f}")
-        print(f"  Leverage: {signal.leverage}x")
-        print(f"  Strategy: {signal.strategy}")
-        print(f"  R:R Ratio: {signal.risk_reward:.2f}")
-    else:
-        print("No signal generated (conditions not met)")
-    
-    # Test risk management
-    print("\n--- Risk Management ---")
-    risk_metrics = risk_manager.risk_metrics
-    print(f"Risk Metrics: {json.dumps(risk_metrics, indent=2, default=str)}")
-    
-    # Test sentiment analysis
-    print("\n--- Sentiment Analysis ---")
-    sample_news = [
-        {'title': 'Fed signals rate hike', 'content': 'Federal Reserve hawkish stance', 'source': 'reuters'},
-        {'title': 'Euro weakens on data', 'content': 'Eurozone PMI disappoints', 'source': 'bloomberg'}
-    ]
-    sentiment = sentiment_manager.update_sentiment(news_articles=sample_news)
-    print(f"Overall Sentiment: {sentiment.overall_score:.2f}")
-    print(f"Bullish: {sentiment.bullish_pct:.1%}, Bearish: {sentiment.bearish_pct:.1%}")
-    print(f"Currency Sentiments: {sentiment.currency_sentiments}")
-    
-    # Test agentic learning
-    print("\n--- Agentic Learning System ---")
-    params = agentic_system.get_trading_parameters()
-    print(f"Trading Mode: {params['trading_mode']}")
-    print(f"Base Risk: {params['base_risk']:.2%}")
-    print(f"Leverage Multiplier: {params['leverage_multiplier']:.2f}")
-    print(f"Aggression Level: {params['aggression_level']:.2f}")
-    
-    # Run quick backtest
-    print("\n--- Quick Backtest ---")
-    engine = BacktestEngine(initial_balance=100)
-    strategy = create_sample_strategy()
-    result = engine.run(df, strategy, 'EURUSD')
-    
-    print(f"Backtest Results:")
-    print(f"  Final Balance: ${result.final_balance:.2f}")
-    print(f"  Total Return: {result.total_return_pct:.2%}")
-    print(f"  Total Trades: {result.total_trades}")
-    print(f"  Win Rate: {result.win_rate:.2%}")
-    print(f"  Sharpe Ratio: {result.sharpe_ratio:.2f}")
-    
-    print("\n" + "=" * 60)
-    print("Demo complete!")
-    print("=" * 60)
+    while True:
+        try:
+            iteration += 1
+            current_time = datetime.now()
+            
+            for symbol in symbols:
+                np.random.seed(int(time.time()) + hash(symbol) % 1000)
+                n_samples = 500
+                
+                base_price = {'EURUSD': 1.1000, 'GBPUSD': 1.2700, 'USDJPY': 150.00, 'USDCHF': 0.8800}.get(symbol, 1.0)
+                prices = [base_price]
+                for i in range(n_samples - 1):
+                    change = np.random.normal(0.0001, 0.001)
+                    prices.append(prices[-1] * (1 + change))
+                
+                df = pd.DataFrame({
+                    'open': prices,
+                    'high': [p * (1 + abs(np.random.normal(0, 0.002))) for p in prices],
+                    'low': [p * (1 - abs(np.random.normal(0, 0.002))) for p in prices],
+                    'close': prices,
+                    'volume': np.random.randint(1000, 10000, n_samples)
+                })
+                df.index = pd.date_range(end=current_time, periods=n_samples, freq='H')
+                df['datetime'] = df.index
+                
+                regime = regime_manager.detect_regime(df)
+                
+                mtf_data = {'H1': df, 'H4': df.resample('4H').agg({
+                    'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+                }).dropna()}
+                
+                signal = decision_engine.analyze_market(symbol, mtf_data, account_balance=account_balance)
+                
+                if signal and signal.confidence > 0.6:
+                    trade_result = np.random.choice(['win', 'loss'], p=[0.55, 0.45])
+                    if trade_result == 'win':
+                        profit = abs(signal.take_profit - signal.entry_price) * signal.position_size * 0.8
+                    else:
+                        profit = -abs(signal.stop_loss - signal.entry_price) * signal.position_size
+                    
+                    account_balance += profit
+                    simulated_trades.append({
+                        'symbol': symbol,
+                        'direction': signal.direction.name,
+                        'profit': profit,
+                        'confidence': signal.confidence,
+                        'strategy': signal.strategy,
+                        'timestamp': current_time
+                    })
+                    
+                    logger.info(f"[DEMO] {symbol} {signal.direction.name} | "
+                               f"Confidence: {signal.confidence:.2f} | "
+                               f"Strategy: {signal.strategy} | "
+                               f"P/L: ${profit:.2f} | "
+                               f"Balance: ${account_balance:.2f}")
+                
+                if PATTERN_MINER_AVAILABLE and pattern_miner and iteration % 100 == 0:
+                    try:
+                        patterns = pattern_miner.analyze_historical_data(df, symbol)
+                        if patterns:
+                            logger.info(f"[DEMO] Learned {len(patterns)} patterns for {symbol}")
+                    except Exception as e:
+                        logger.warning(f"Pattern learning error: {e}")
+            
+            if (current_time - last_status_time).seconds >= 300:
+                wins = len([t for t in simulated_trades if t['profit'] > 0])
+                total = len(simulated_trades)
+                win_rate = wins / total if total > 0 else 0
+                
+                print("\n" + "=" * 50)
+                print(f"DEMO STATUS - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print("=" * 50)
+                print(f"Account Balance: ${account_balance:.2f}")
+                print(f"Total Trades: {total}")
+                print(f"Win Rate: {win_rate:.1%}")
+                print(f"Trading Mode: {agentic_system.get_trading_parameters()['trading_mode']}")
+                print(f"PatternMiner: {PATTERN_MINER_AVAILABLE}")
+                print(f"BedrockAI: {BEDROCK_AVAILABLE}")
+                if PATTERN_MINER_AVAILABLE and pattern_miner:
+                    active_patterns = pattern_miner.get_all_active_patterns()
+                    print(f"Active Patterns: {len(active_patterns)}")
+                print("=" * 50 + "\n")
+                
+                last_status_time = current_time
+            
+            if current_time.date() != last_daily_reset:
+                logger.info("Running daily learning cycle...")
+                try:
+                    trades_today = [t for t in simulated_trades 
+                                   if t['timestamp'].date() == last_daily_reset]
+                    
+                    historical_data = {}
+                    for symbol in symbols:
+                        np.random.seed(int(time.time()) + hash(symbol) % 1000)
+                        n_samples = 1000
+                        base_price = {'EURUSD': 1.1000, 'GBPUSD': 1.2700, 'USDJPY': 150.00, 'USDCHF': 0.8800}.get(symbol, 1.0)
+                        prices = [base_price]
+                        for i in range(n_samples - 1):
+                            change = np.random.normal(0.0001, 0.001)
+                            prices.append(prices[-1] * (1 + change))
+                        
+                        df = pd.DataFrame({
+                            'open': prices,
+                            'high': [p * (1 + abs(np.random.normal(0, 0.002))) for p in prices],
+                            'low': [p * (1 - abs(np.random.normal(0, 0.002))) for p in prices],
+                            'close': prices,
+                            'volume': np.random.randint(1000, 10000, n_samples)
+                        })
+                        df.index = pd.date_range(end=current_time, periods=n_samples, freq='H')
+                        df['datetime'] = df.index
+                        historical_data[symbol] = df
+                    
+                    report = agentic_system.run_daily_learning_cycle(
+                        trades_today, account_balance, historical_data
+                    )
+                    logger.info(f"Daily learning complete: {report.total_trades} trades analyzed")
+                except Exception as e:
+                    logger.error(f"Daily learning error: {e}")
+                
+                last_daily_reset = current_time.date()
+            
+            time.sleep(30)
+            
+        except KeyboardInterrupt:
+            print("\n" + "=" * 60)
+            print("Demo mode stopped by user")
+            print(f"Final Balance: ${account_balance:.2f}")
+            print(f"Total Trades: {len(simulated_trades)}")
+            print("=" * 60)
+            break
+        except Exception as e:
+            logger.error(f"Demo loop error: {e}")
+            time.sleep(60)
 
 
 def main():

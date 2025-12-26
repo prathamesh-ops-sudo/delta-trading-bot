@@ -17,6 +17,20 @@ from indicators import TechnicalIndicators, FeatureEngineer
 from regime_detection import regime_manager, MarketRegime
 from agentic import agentic_system
 
+try:
+    from pattern_miner import pattern_miner, PatternMiner
+    PATTERN_MINER_AVAILABLE = True
+except ImportError:
+    PATTERN_MINER_AVAILABLE = False
+    pattern_miner = None
+
+try:
+    from bedrock_ai import bedrock_ai, BedrockAI
+    BEDROCK_AVAILABLE = True
+except ImportError:
+    BEDROCK_AVAILABLE = False
+    bedrock_ai = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -493,6 +507,9 @@ class VeteranTraderDecisionEngine:
         self.leverage_calculator = DynamicLeverageCalculator()
         self.trailing_manager = TrailingStopManager()
         
+        self.pattern_miner = pattern_miner if PATTERN_MINER_AVAILABLE else None
+        self.bedrock_ai = bedrock_ai if BEDROCK_AVAILABLE else None
+        
         # Decision thresholds
         self.min_confidence = 0.55
         self.min_rr_ratio = 1.5
@@ -502,8 +519,11 @@ class VeteranTraderDecisionEngine:
             'trend_following': 0.3,
             'mean_reversion': 0.25,
             'fvg_entry': 0.25,
-            'liquidity_sweep': 0.2
+            'liquidity_sweep': 0.2,
+            'pattern_based': 0.2
         }
+        
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float) -> Optional[TradingSignal]:
@@ -550,6 +570,47 @@ class VeteranTraderDecisionEngine:
         fvgs = self.fvg_detector.detect_fvg(df, pip_value)
         sweeps = self.sweep_detector.detect_sweeps(df, pip_value)
         
+        # 4.5 Get time-based pattern signal (human-like pattern recognition)
+        pattern_signal = None
+        pattern_descriptions = []
+        if self.pattern_miner:
+            try:
+                current_time = datetime.now()
+                pattern_data = self.pattern_miner.get_pattern_signal(symbol, current_time)
+                if pattern_data['pattern_count'] > 0:
+                    pattern_descriptions = pattern_data.get('descriptions', [])
+                    logger.info(f"Pattern signal for {symbol}: bias={pattern_data['bias']:.2f}, "
+                               f"confidence={pattern_data['confidence']:.2f}, patterns={pattern_data['pattern_count']}")
+            except Exception as e:
+                logger.warning(f"Pattern mining error: {e}")
+        
+        # 4.6 Get AI analysis from Bedrock (if available)
+        ai_analysis = None
+        if self.bedrock_ai:
+            try:
+                indicators_dict = {
+                    'rsi': float(rsi),
+                    'adx': float(adx_value),
+                    'atr': float(atr),
+                    'macd': float(macd_value),
+                    'bb_position': float(bb_position)
+                }
+                market_data = {
+                    'close': float(current_price),
+                    'open': float(df['open'].iloc[-1]),
+                    'high': float(df['high'].iloc[-1]),
+                    'low': float(df['low'].iloc[-1])
+                }
+                ai_analysis = self.bedrock_ai.analyze_market(
+                    symbol, market_data, indicators_dict,
+                    regime.name if regime else 'unknown',
+                    pattern_descriptions
+                )
+                logger.info(f"AI analysis for {symbol}: sentiment={ai_analysis.sentiment}, "
+                           f"recommendation={ai_analysis.recommendation}, confidence={ai_analysis.confidence:.2f}")
+            except Exception as e:
+                logger.warning(f"Bedrock AI analysis error: {e}")
+        
         # 5. Generate signals from each strategy
         signals = []
         
@@ -576,6 +637,16 @@ class VeteranTraderDecisionEngine:
         sweep_signal = self._liquidity_sweep_signal(sweeps, current_price)
         if sweep_signal:
             signals.append(('liquidity_sweep', sweep_signal))
+        
+        # Pattern-based signal (time-of-day patterns like "9am dip")
+        if self.pattern_miner and pattern_data and pattern_data['confidence'] > 0.6:
+            pattern_signal = self._pattern_based_signal(pattern_data, current_price)
+            if pattern_signal:
+                signals.append(('pattern_based', pattern_signal))
+        
+        # AI-enhanced signal adjustment
+        if ai_analysis and ai_analysis.confidence > 0.6:
+            signals = self._apply_ai_analysis(signals, ai_analysis)
         
         if not signals:
             return None
@@ -849,6 +920,73 @@ class VeteranTraderDecisionEngine:
             confidence -= 0.05
         
         return np.clip(confidence, 0, 1)
+    
+    def _pattern_based_signal(self, pattern_data: Dict, current_price: float) -> Optional[Tuple]:
+        """Generate signal based on discovered time-based patterns"""
+        bias = pattern_data.get('bias', 0)
+        confidence = pattern_data.get('confidence', 0)
+        expected_move = pattern_data.get('expected_move', 0)
+        descriptions = pattern_data.get('descriptions', [])
+        
+        if abs(bias) < 0.3 or confidence < 0.6:
+            return None
+        
+        direction = TradeDirection.LONG if bias > 0 else TradeDirection.SHORT
+        
+        base_confidence = 0.5 + abs(bias) * 0.3
+        base_confidence = min(0.85, base_confidence * confidence)
+        
+        reason_parts = ["pattern_based"]
+        if descriptions:
+            reason_parts.append(descriptions[0][:50])
+        reason = ": ".join(reason_parts)
+        
+        logger.info(f"Pattern-based signal: {direction.name}, confidence={base_confidence:.2f}, "
+                   f"expected_move={expected_move:.1f} pips")
+        
+        return (direction, base_confidence, reason)
+    
+    def _apply_ai_analysis(self, signals: List[Tuple], ai_analysis) -> List[Tuple]:
+        """Apply AI analysis to adjust signal confidence"""
+        if not signals or not ai_analysis:
+            return signals
+        
+        adjusted_signals = []
+        
+        for strategy, (direction, confidence, reason) in signals:
+            adjusted_confidence = confidence
+            
+            if ai_analysis.recommendation == 'buy' and direction == TradeDirection.LONG:
+                adjusted_confidence *= (1 + ai_analysis.confidence * 0.2)
+                reason += f" [AI: bullish {ai_analysis.confidence:.0%}]"
+            elif ai_analysis.recommendation == 'sell' and direction == TradeDirection.SHORT:
+                adjusted_confidence *= (1 + ai_analysis.confidence * 0.2)
+                reason += f" [AI: bearish {ai_analysis.confidence:.0%}]"
+            elif ai_analysis.recommendation == 'hold' or ai_analysis.recommendation == 'wait':
+                adjusted_confidence *= 0.8
+                reason += " [AI: caution]"
+            elif (ai_analysis.recommendation == 'buy' and direction == TradeDirection.SHORT) or \
+                 (ai_analysis.recommendation == 'sell' and direction == TradeDirection.LONG):
+                adjusted_confidence *= 0.6
+                reason += " [AI: conflicting]"
+            
+            adjusted_confidence *= ai_analysis.position_size_modifier
+            adjusted_confidence = np.clip(adjusted_confidence, 0, 1)
+            
+            adjusted_signals.append((strategy, (direction, adjusted_confidence, reason)))
+        
+        return adjusted_signals
+    
+    def learn_patterns_from_data(self, symbol: str, df: pd.DataFrame):
+        """Learn time-based patterns from historical data"""
+        if self.pattern_miner and not df.empty:
+            try:
+                patterns = self.pattern_miner.analyze_historical_data(df, symbol)
+                logger.info(f"Learned {len(patterns)} new patterns for {symbol}")
+                return patterns
+            except Exception as e:
+                logger.error(f"Pattern learning error: {e}")
+        return []
     
     def should_exit_trade(self, signal: TradingSignal, current_price: float,
                           current_profit_pips: float) -> Tuple[bool, str]:
