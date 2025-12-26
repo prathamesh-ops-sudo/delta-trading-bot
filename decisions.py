@@ -687,12 +687,20 @@ class VeteranTraderDecisionEngine:
             confidence, adx_value, atr, regime, aggression
         )
         
-        # 11. Calculate position size
+        # 11. Calculate position size (proper lot sizing for Forex)
         risk_amount = agentic_system.calculate_position_size(
             {'confidence': confidence, 'strategy': strategy},
             account_balance
         )
-        position_size = risk_amount / sl_distance if sl_distance > 0 else 0
+        # Convert risk amount to lots
+        # For Forex: 1 standard lot = 100,000 units, pip value varies by pair
+        # Simplified: risk_amount / (sl_distance_in_pips * pip_value_per_lot)
+        # For most USD pairs, pip value is ~$10 per standard lot
+        pip_value_per_lot = 10.0  # USD per pip per standard lot
+        sl_pips = sl_distance * 10000 if 'JPY' not in symbol else sl_distance * 100
+        position_size = risk_amount / (sl_pips * pip_value_per_lot) if sl_pips > 0 else 0
+        # Ensure minimum lot size of 0.01 and maximum of 1.0 for $100 account
+        position_size = max(0.01, min(position_size, 1.0))
         
         # 12. Determine trailing stop
         trailing_enabled = confidence > 0.7 and adx_value > 30
