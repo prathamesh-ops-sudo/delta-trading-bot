@@ -526,7 +526,40 @@ def run_mt5_bridge(args):
         BEDROCK_AVAILABLE = False
         bedrock_ai = None
     
+    # Phoenix components - 24/7 learning and enhanced RL
+    try:
+        from knowledge_acquisition import knowledge_engine
+        KNOWLEDGE_ENGINE_AVAILABLE = True
+        # Start background knowledge collection (every 30 minutes)
+        knowledge_engine.start_background_collection(interval_minutes=30)
+        logger.info("Knowledge acquisition engine started - 24/7 learning enabled")
+    except ImportError as e:
+        KNOWLEDGE_ENGINE_AVAILABLE = False
+        knowledge_engine = None
+        logger.warning(f"Knowledge acquisition not available: {e}")
+    
+    try:
+        from phoenix_brain import phoenix_brain, TradingState
+        PHOENIX_BRAIN_AVAILABLE = True
+        logger.info("Phoenix brain initialized - brutal reward function active")
+    except ImportError as e:
+        PHOENIX_BRAIN_AVAILABLE = False
+        phoenix_brain = None
+        TradingState = None
+        logger.warning(f"Phoenix brain not available: {e}")
+    
+    try:
+        from vector_memory import vector_memory, TradeExperience
+        VECTOR_MEMORY_AVAILABLE = True
+        logger.info("Vector memory initialized - FAISS experience replay enabled")
+    except ImportError as e:
+        VECTOR_MEMORY_AVAILABLE = False
+        vector_memory = None
+        TradeExperience = None
+        logger.warning(f"Vector memory not available: {e}")
+    
     logger.info(f"MT5 Bridge mode - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
+    logger.info(f"Phoenix components - Knowledge: {KNOWLEDGE_ENGINE_AVAILABLE}, Brain: {PHOENIX_BRAIN_AVAILABLE}, Memory: {VECTOR_MEMORY_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread
@@ -705,7 +738,7 @@ def run_mt5_bridge(args):
                 # Status update every 5 minutes
                 if (current_time - last_status_time).seconds >= 300:
                     print("\n" + "=" * 60)
-                    print(f"INTELLIGENT TRADING SYSTEM - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"PHOENIX TRADING SYSTEM - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     print("=" * 60)
                     print(f"MT5 Connected: YES")
                     print(f"Account Balance: ${account_balance:.2f}")
@@ -723,6 +756,25 @@ def run_mt5_bridge(args):
                     print("-" * 60)
                     print(f"PatternMiner: {PATTERN_MINER_AVAILABLE}")
                     print(f"BedrockAI: {BEDROCK_AVAILABLE}")
+                    
+                    # Phoenix components status
+                    print("-" * 60)
+                    print("PHOENIX INTELLIGENCE:")
+                    if KNOWLEDGE_ENGINE_AVAILABLE and knowledge_engine:
+                        state = knowledge_engine.get_current_state()
+                        if state:
+                            print(f"  Market Sentiment: {state.overall_sentiment:+.2f}")
+                            print(f"  Insights Collected: {state.insights_count}")
+                            if state.strategy_hints:
+                                print(f"  Strategy Hint: {state.strategy_hints[0][:60]}...")
+                    if PHOENIX_BRAIN_AVAILABLE and phoenix_brain:
+                        metrics = phoenix_brain.get_performance_metrics()
+                        print(f"  Sharpe Ratio: {metrics.get('sharpe', 0):.2f}")
+                        print(f"  Profit Factor: {metrics.get('profit_factor', 1):.2f}")
+                        print(f"  Regime Alignment: {metrics.get('regime_alignment_rate', 0):.0%}")
+                    if VECTOR_MEMORY_AVAILABLE and vector_memory:
+                        stats = vector_memory.get_statistics()
+                        print(f"  Experiences Stored: {stats.get('total_experiences', 0)}")
                     print("=" * 60 + "\n")
                     
                     last_status_time = current_time
@@ -742,6 +794,22 @@ def run_mt5_bridge(args):
                         executed_trades, account_balance if mt5_connected else 100.0
                     )
                     logger.info(f"[REFLECTION] Daily summary generated - Mood: {daily_summary.mood}")
+                    
+                    # Phoenix brain session summary
+                    if PHOENIX_BRAIN_AVAILABLE and phoenix_brain:
+                        knowledge_state = None
+                        if KNOWLEDGE_ENGINE_AVAILABLE and knowledge_engine:
+                            ks = knowledge_engine.get_current_state()
+                            if ks:
+                                knowledge_state = ks.to_dict()
+                        
+                        session_summary = phoenix_brain.generate_session_summary(knowledge_state)
+                        logger.info(f"[PHOENIX] Session Summary:\n{session_summary[:500]}...")
+                    
+                    # Generate knowledge acquisition report
+                    if KNOWLEDGE_ENGINE_AVAILABLE and knowledge_engine:
+                        knowledge_report = knowledge_engine.generate_learning_report()
+                        logger.info(f"[PHOENIX] Knowledge Report:\n{knowledge_report[:500]}...")
                     
                     # Run agentic learning
                     report = agentic_system.run_daily_learning_cycle(

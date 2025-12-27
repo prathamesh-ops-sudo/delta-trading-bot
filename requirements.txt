@@ -26,6 +26,15 @@ hmmlearn>=0.2.7
 nltk>=3.7
 textblob>=0.17.1
 vaderSentiment>=3.3.2
+transformers>=4.20.0
+
+# Vector Memory / Embeddings
+faiss-cpu>=1.7.0
+sentence-transformers>=2.2.0
+
+# RSS / Web Scraping
+feedparser>=6.0.0
+praw>=7.6.0
 
 # Data Sources
 yfinance>=0.1.70
