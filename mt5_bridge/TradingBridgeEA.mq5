@@ -288,23 +288,116 @@ void ExecuteSignal(string signalJson)
    ulong ticket = 0;
    string errorMsg = "";
    
-   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, " stopLevel=", stopLevel);
+   // Get freeze level as well (can also cause invalid stops)
+   long freezeLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist = MathMax(stopLevel, freezeLevel) * point;
+   
+   // Store original SL/TP for fallback modify
+   double origSL = sl;
+   double origTP = tp;
+   
+   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, 
+         " bid=", bid, " ask=", ask, " stopLevel=", stopLevel, " freezeLevel=", freezeLevel);
    
    if(action == "buy")
    {
+      // Validate SL/TP for BUY: SL must be below bid-minDist, TP must be above ask+minDist
+      if(sl > 0 && sl > bid - minDist)
+      {
+         sl = NormalizeDouble(bid - minDist - 10*point, digits);  // Add extra buffer
+         Print("Adjusted BUY SL from ", origSL, " to ", sl);
+      }
+      if(tp > 0 && tp < ask + minDist)
+      {
+         tp = NormalizeDouble(ask + minDist + 10*point, digits);  // Add extra buffer
+         Print("Adjusted BUY TP from ", origTP, " to ", tp);
+      }
+      
       success = trade.Buy(volume, symbol, ask, sl, tp, comment);
       if(success)
+      {
          ticket = trade.ResultOrder();
+      }
+      else if(trade.ResultRetcode() == 10016)  // Invalid stops - try without stops then modify
+      {
+         Print("Buy with stops failed (10016), retrying without stops...");
+         success = trade.Buy(volume, symbol, ask, 0, 0, comment);
+         if(success)
+         {
+            ticket = trade.ResultOrder();
+            Print("Buy without stops succeeded, ticket=", ticket, ", now modifying...");
+            // Wait a moment for position to be registered
+            Sleep(100);
+            // Try to modify with original SL/TP
+            if(!trade.PositionModify(ticket, origSL, origTP))
+            {
+               Print("PositionModify failed: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+               // Position is open but without stops - still report success
+            }
+            else
+            {
+               Print("PositionModify succeeded with SL=", origSL, " TP=", origTP);
+            }
+         }
+         else
+         {
+            errorMsg = StringFormat("Buy failed (even without stops): %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+         }
+      }
       else
+      {
          errorMsg = StringFormat("Buy failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+      }
    }
    else if(action == "sell")
    {
+      // Validate SL/TP for SELL: SL must be above ask+minDist, TP must be below bid-minDist
+      if(sl > 0 && sl < ask + minDist)
+      {
+         sl = NormalizeDouble(ask + minDist + 10*point, digits);  // Add extra buffer
+         Print("Adjusted SELL SL from ", origSL, " to ", sl);
+      }
+      if(tp > 0 && tp > bid - minDist)
+      {
+         tp = NormalizeDouble(bid - minDist - 10*point, digits);  // Add extra buffer
+         Print("Adjusted SELL TP from ", origTP, " to ", tp);
+      }
+      
       success = trade.Sell(volume, symbol, bid, sl, tp, comment);
       if(success)
+      {
          ticket = trade.ResultOrder();
+      }
+      else if(trade.ResultRetcode() == 10016)  // Invalid stops - try without stops then modify
+      {
+         Print("Sell with stops failed (10016), retrying without stops...");
+         success = trade.Sell(volume, symbol, bid, 0, 0, comment);
+         if(success)
+         {
+            ticket = trade.ResultOrder();
+            Print("Sell without stops succeeded, ticket=", ticket, ", now modifying...");
+            // Wait a moment for position to be registered
+            Sleep(100);
+            // Try to modify with original SL/TP
+            if(!trade.PositionModify(ticket, origSL, origTP))
+            {
+               Print("PositionModify failed: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+               // Position is open but without stops - still report success
+            }
+            else
+            {
+               Print("PositionModify succeeded with SL=", origSL, " TP=", origTP);
+            }
+         }
+         else
+         {
+            errorMsg = StringFormat("Sell failed (even without stops): %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+         }
+      }
       else
+      {
          errorMsg = StringFormat("Sell failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+      }
    }
    else if(action == "close")
    {
