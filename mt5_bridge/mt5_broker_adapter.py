@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 class TradeDirection(Enum):
-    LONG = "long"
-    SHORT = "short"
+    LONG = 1
+    SHORT = -1
+    NEUTRAL = 0
 
 
 class MT5BrokerAdapter:
