@@ -135,7 +135,9 @@ class MT5BrokerAdapter:
             return None
         
         try:
-            action = "buy" if direction == TradeDirection.LONG else "sell"
+            # Use .name comparison to handle cross-module enum types
+            direction_name = getattr(direction, 'name', str(direction))
+            action = "buy" if direction_name == "LONG" else "sell"
             signal_id = str(uuid.uuid4())
             
             payload = {
