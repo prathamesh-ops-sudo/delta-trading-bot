@@ -506,6 +506,7 @@ def run_mt5_bridge(args):
     from decisions import decision_engine, TradeDirection
     from regime_detection import regime_manager
     from risk_management import risk_manager
+    from trading_captain import trading_captain, TradingMode
     import numpy as np
     import pandas as pd
     import threading
@@ -525,6 +526,7 @@ def run_mt5_bridge(args):
         bedrock_ai = None
     
     logger.info(f"MT5 Bridge mode - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
+    logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread
     api_port = int(os.environ.get('MT5_BRIDGE_PORT', 5000))
@@ -569,6 +571,9 @@ def run_mt5_bridge(args):
                 account_equity = broker.get_equity()
                 open_positions = broker.get_open_positions()
                 
+                # Update Trading Captain with real balance
+                trading_captain.update_balance(account_balance)
+                
                 if account_balance <= 0:
                     logger.warning("MT5 balance is 0 - waiting for account data...")
                     time.sleep(5)
@@ -609,42 +614,69 @@ def run_mt5_bridge(args):
                         # Get trading signal
                         signal = decision_engine.analyze_market(symbol, mtf_data, account_balance=account_balance)
                         
-                        # Execute signal if confidence is high enough
-                        if signal and signal.confidence > 0.65:
-                            # Check if we already have a position in this symbol
-                            existing_position = any(p.get('symbol') == symbol for p in open_positions)
+                        # Use Trading Captain for intelligent decision-making
+                        if signal:
+                            # Check if Trading Captain approves this trade
+                            should_trade, reason = trading_captain.should_take_trade(signal, len(open_positions))
                             
-                            if not existing_position:
-                                direction = TradeDirection.LONG if signal.direction.name == 'LONG' else TradeDirection.SHORT
+                            if should_trade:
+                                # Check if we already have a position in this symbol
+                                existing_position = any(p.get('symbol') == symbol for p in open_positions)
                                 
-                                # Place real order via MT5 bridge
-                                ticket = broker.place_order(
-                                    symbol=symbol,
-                                    direction=direction,
-                                    volume=signal.position_size,
-                                    sl=signal.stop_loss,
-                                    tp=signal.take_profit,
-                                    comment=f"AI_{signal.strategy}"
-                                )
-                                
-                                if ticket:
-                                    executed_trades.append({
-                                        'ticket': ticket,
-                                        'symbol': symbol,
-                                        'direction': signal.direction.name,
-                                        'volume': signal.position_size,
-                                        'confidence': signal.confidence,
-                                        'strategy': signal.strategy,
-                                        'timestamp': current_time
-                                    })
+                                if not existing_position:
+                                    # Generate trade thesis (intelligent explanation)
+                                    regime_name = regime.name if regime else 'unknown'
+                                    indicators = {
+                                        'rsi': signal.rsi,
+                                        'adx': signal.adx,
+                                        'atr': signal.atr
+                                    }
+                                    thesis = trading_captain.generate_trade_thesis(
+                                        signal, {'close': signal.entry_price}, indicators, regime_name
+                                    )
                                     
-                                    logger.info(f"[MT5] Order executed: {symbol} {signal.direction.name} | "
-                                               f"Volume: {signal.position_size} | "
-                                               f"Confidence: {signal.confidence:.2f} | "
-                                               f"Strategy: {signal.strategy} | "
-                                               f"Ticket: {ticket}")
-                                else:
-                                    logger.warning(f"[MT5] Order failed for {symbol}")
+                                    # Log the trade thesis (intelligent reasoning)
+                                    logger.info(thesis.to_readable())
+                                    
+                                    # Use Trading Captain's calculated position size
+                                    position_size = thesis.position_size_lots
+                                    
+                                    direction = TradeDirection.LONG if signal.direction.name == 'LONG' else TradeDirection.SHORT
+                                    
+                                    # Place real order via MT5 bridge
+                                    ticket = broker.place_order(
+                                        symbol=symbol,
+                                        direction=direction,
+                                        volume=position_size,
+                                        sl=signal.stop_loss,
+                                        tp=signal.take_profit,
+                                        comment=f"AI_{signal.strategy}_{trading_captain.mode.value}"
+                                    )
+                                    
+                                    if ticket:
+                                        executed_trades.append({
+                                            'ticket': ticket,
+                                            'symbol': symbol,
+                                            'direction': signal.direction.name,
+                                            'volume': position_size,
+                                            'confidence': signal.confidence,
+                                            'strategy': signal.strategy,
+                                            'regime': regime_name,
+                                            'risk_budget': thesis.risk_budget_percent,
+                                            'thesis': thesis.entry_reason,
+                                            'timestamp': current_time
+                                        })
+                                        
+                                        logger.info(f"[MT5] INTELLIGENT ORDER: {symbol} {signal.direction.name} | "
+                                                   f"Mode: {trading_captain.mode.value} | "
+                                                   f"Risk: {thesis.risk_budget_percent:.1%} | "
+                                                   f"Size: {position_size} lots | "
+                                                   f"R:R: 1:{thesis.risk_reward_ratio:.1f} | "
+                                                   f"Ticket: {ticket}")
+                                    else:
+                                        logger.warning(f"[MT5] Order failed for {symbol}")
+                            else:
+                                logger.debug(f"[Captain] Trade rejected for {symbol}: {reason}")
                         
                         # Pattern learning
                         if PATTERN_MINER_AVAILABLE and pattern_miner and iteration % 100 == 0:
@@ -660,18 +692,26 @@ def run_mt5_bridge(args):
                 
                 # Status update every 5 minutes
                 if (current_time - last_status_time).seconds >= 300:
-                    print("\n" + "=" * 50)
-                    print(f"MT5 BRIDGE STATUS - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                    print("=" * 50)
+                    print("\n" + "=" * 60)
+                    print(f"INTELLIGENT TRADING SYSTEM - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print("=" * 60)
                     print(f"MT5 Connected: YES")
                     print(f"Account Balance: ${account_balance:.2f}")
                     print(f"Account Equity: ${account_equity:.2f}")
+                    print(f"Peak Balance: ${trading_captain.memory.peak_balance:.2f}")
+                    print(f"Drawdown: {trading_captain.memory.drawdown_percent:.1%}")
                     print(f"Open Positions: {len(open_positions)}")
                     print(f"Trades Executed: {len(executed_trades)}")
-                    print(f"Trading Mode: {agentic_system.get_trading_parameters()['trading_mode']}")
+                    print("-" * 60)
+                    print(f"TRADING CAPTAIN MODE: {trading_captain.mode.value.upper()}")
+                    print(f"Win Streak: {trading_captain.memory.win_streak} | Loss Streak: {trading_captain.memory.loss_streak}")
+                    print(f"Daily P&L: ${trading_captain.memory.daily_pnl:.2f}")
+                    if trading_captain.memory.insights:
+                        print(f"Latest Insight: {trading_captain.memory.insights[-1]}")
+                    print("-" * 60)
                     print(f"PatternMiner: {PATTERN_MINER_AVAILABLE}")
                     print(f"BedrockAI: {BEDROCK_AVAILABLE}")
-                    print("=" * 50 + "\n")
+                    print("=" * 60 + "\n")
                     
                     last_status_time = current_time
             
