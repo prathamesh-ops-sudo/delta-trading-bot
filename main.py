@@ -507,6 +507,7 @@ def run_mt5_bridge(args):
     from regime_detection import regime_manager
     from risk_management import risk_manager
     from trading_captain import trading_captain, TradingMode
+    from self_reflection import reflection_engine
     import numpy as np
     import pandas as pd
     import threading
@@ -654,7 +655,7 @@ def run_mt5_bridge(args):
                                     )
                                     
                                     if ticket:
-                                        executed_trades.append({
+                                        trade_data = {
                                             'ticket': ticket,
                                             'symbol': symbol,
                                             'direction': signal.direction.name,
@@ -664,8 +665,19 @@ def run_mt5_bridge(args):
                                             'regime': regime_name,
                                             'risk_budget': thesis.risk_budget_percent,
                                             'thesis': thesis.entry_reason,
+                                            'entry_price': signal.entry_price,
+                                            'indicators': indicators,
                                             'timestamp': current_time
-                                        })
+                                        }
+                                        executed_trades.append(trade_data)
+                                        
+                                        # Record trade entry for self-reflection
+                                        reflection_engine.record_trade_entry(str(ticket), trade_data)
+                                        
+                                        # Get pre-trade wisdom from past insights
+                                        wisdom = reflection_engine.get_pre_trade_wisdom(symbol, signal.strategy, regime_name)
+                                        if "No specific" not in wisdom:
+                                            logger.info(f"[WISDOM] {wisdom}")
                                         
                                         logger.info(f"[MT5] INTELLIGENT ORDER: {symbol} {signal.direction.name} | "
                                                    f"Mode: {trading_captain.mode.value} | "
@@ -725,10 +737,20 @@ def run_mt5_bridge(args):
             if current_time.date() != last_daily_reset:
                 logger.info("Running daily learning cycle...")
                 try:
+                    # Generate daily self-reflection summary
+                    daily_summary = reflection_engine.generate_daily_summary(
+                        executed_trades, account_balance if mt5_connected else 100.0
+                    )
+                    logger.info(f"[REFLECTION] Daily summary generated - Mood: {daily_summary.mood}")
+                    
+                    # Run agentic learning
                     report = agentic_system.run_daily_learning_cycle(
                         executed_trades, account_balance if mt5_connected else 100.0
                     )
                     logger.info(f"Daily learning complete")
+                    
+                    # Clear executed trades for new day
+                    executed_trades.clear()
                 except Exception as e:
                     logger.error(f"Daily learning error: {e}")
                 
