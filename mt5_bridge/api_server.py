@@ -35,6 +35,113 @@ class TradeSignal:
     result: Optional[Dict] = None
 
 
+class MarketDataBuffer:
+    """Ring buffer for storing live market data from MT5"""
+    
+    def __init__(self, max_bars: int = 500):
+        self.max_bars = max_bars
+        self.data: Dict[str, Dict] = {}  # symbol -> {quote, bars}
+        self.lock = Lock()
+        self.last_update: Optional[datetime] = None
+    
+    def update(self, symbol: str, quote_data: Dict, bars: List[Dict]):
+        with self.lock:
+            if symbol not in self.data:
+                self.data[symbol] = {'quote': {}, 'bars': []}
+            
+            self.data[symbol]['quote'] = quote_data
+            
+            # Merge new bars with existing, keeping most recent max_bars
+            existing_bars = self.data[symbol]['bars']
+            if bars:
+                # Convert bars to dict keyed by timestamp for deduplication
+                bar_dict = {b['t']: b for b in existing_bars}
+                for bar in bars:
+                    bar_dict[bar['t']] = bar
+                # Sort by timestamp and keep most recent
+                sorted_bars = sorted(bar_dict.values(), key=lambda x: x['t'])
+                self.data[symbol]['bars'] = sorted_bars[-self.max_bars:]
+            
+            self.last_update = datetime.now()
+    
+    def get_quote(self, symbol: str) -> Optional[Dict]:
+        with self.lock:
+            if symbol in self.data:
+                return self.data[symbol]['quote'].copy()
+            return None
+    
+    def get_bars(self, symbol: str, count: int = 200) -> List[Dict]:
+        with self.lock:
+            if symbol in self.data:
+                bars = self.data[symbol]['bars']
+                return bars[-count:] if len(bars) > count else bars.copy()
+            return []
+    
+    def get_all_symbols(self) -> List[str]:
+        with self.lock:
+            return list(self.data.keys())
+    
+    def get_spread(self, symbol: str) -> float:
+        quote = self.get_quote(symbol)
+        return quote.get('spread', 0.0) if quote else 0.0
+    
+    def get_bid_ask(self, symbol: str) -> tuple:
+        quote = self.get_quote(symbol)
+        if quote:
+            return quote.get('bid', 0.0), quote.get('ask', 0.0)
+        return 0.0, 0.0
+
+
+class ClosedTradesStore:
+    """Store for closed trades used for learning feedback loop"""
+    
+    def __init__(self, max_trades: int = 1000):
+        self.max_trades = max_trades
+        self.trades: List[Dict] = []
+        self.lock = Lock()
+        self.last_update: Optional[datetime] = None
+        self.total_profit: float = 0.0
+        self.win_count: int = 0
+        self.loss_count: int = 0
+    
+    def add_trades(self, trades: List[Dict]):
+        with self.lock:
+            for trade in trades:
+                # Avoid duplicates by ticket
+                if not any(t['ticket'] == trade['ticket'] for t in self.trades):
+                    self.trades.append(trade)
+                    profit = trade.get('profit', 0.0)
+                    self.total_profit += profit
+                    if profit > 0:
+                        self.win_count += 1
+                    elif profit < 0:
+                        self.loss_count += 1
+            
+            # Keep only most recent trades
+            if len(self.trades) > self.max_trades:
+                self.trades = self.trades[-self.max_trades:]
+            
+            self.last_update = datetime.now()
+            logger.info(f"Closed trades updated: {len(trades)} new, total={len(self.trades)}, P&L=${self.total_profit:.2f}")
+    
+    def get_recent_trades(self, count: int = 50) -> List[Dict]:
+        with self.lock:
+            return self.trades[-count:] if len(self.trades) > count else self.trades.copy()
+    
+    def get_stats(self) -> Dict:
+        with self.lock:
+            total = self.win_count + self.loss_count
+            win_rate = self.win_count / total if total > 0 else 0.0
+            return {
+                'total_trades': len(self.trades),
+                'total_profit': self.total_profit,
+                'win_count': self.win_count,
+                'loss_count': self.loss_count,
+                'win_rate': win_rate,
+                'last_update': self.last_update.isoformat() if self.last_update else None
+            }
+
+
 class MT5BridgeState:
     """Shared state for MT5 bridge communication"""
     
@@ -47,6 +154,8 @@ class MT5BridgeState:
         self.last_update: Optional[datetime] = None
         self.is_connected: bool = False
         self.connection_time: Optional[datetime] = None
+        self.market_data = MarketDataBuffer()
+        self.closed_trades = ClosedTradesStore()
         
     def update_account(self, info: Dict):
         with self.lock:
@@ -268,6 +377,102 @@ def health():
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
 
+@app.route('/api/market_data', methods=['POST'])
+def receive_market_data():
+    """Receive live market data from EA (bid/ask/spread + OHLC bars)"""
+    data = request.get_json()
+    
+    symbols_data = data.get('symbols', [])
+    is_initial = data.get('initial', False)
+    
+    for sym_data in symbols_data:
+        symbol = sym_data.get('symbol', '')
+        if not symbol:
+            continue
+        
+        quote_data = {
+            'bid': sym_data.get('bid', 0.0),
+            'ask': sym_data.get('ask', 0.0),
+            'spread': sym_data.get('spread', 0.0),
+            'digits': sym_data.get('digits', 5),
+            'point': sym_data.get('point', 0.00001),
+            'stop_level': sym_data.get('stop_level', 0),
+            'freeze_level': sym_data.get('freeze_level', 0),
+            'tick_value': sym_data.get('tick_value', 1.0),
+            'min_lot': sym_data.get('min_lot', 0.01),
+            'lot_step': sym_data.get('lot_step', 0.01),
+            'timestamp': data.get('ts', 0)
+        }
+        
+        bars = sym_data.get('bars', [])
+        bridge_state.market_data.update(symbol, quote_data, bars)
+    
+    if is_initial:
+        logger.info(f"Initial market data received for {len(symbols_data)} symbols")
+    
+    return jsonify({'status': 'ok', 'symbols_updated': len(symbols_data)})
+
+
+@app.route('/api/market_data', methods=['GET'])
+def get_market_data():
+    """Get current market data for analysis"""
+    symbol = request.args.get('symbol', None)
+    count = int(request.args.get('count', 200))
+    
+    if symbol:
+        quote = bridge_state.market_data.get_quote(symbol)
+        bars = bridge_state.market_data.get_bars(symbol, count)
+        return jsonify({
+            'symbol': symbol,
+            'quote': quote,
+            'bars': bars,
+            'bar_count': len(bars)
+        })
+    else:
+        # Return all symbols
+        symbols = bridge_state.market_data.get_all_symbols()
+        result = {}
+        for sym in symbols:
+            quote = bridge_state.market_data.get_quote(sym)
+            bars = bridge_state.market_data.get_bars(sym, count)
+            result[sym] = {
+                'quote': quote,
+                'bars': bars,
+                'bar_count': len(bars)
+            }
+        return jsonify({
+            'symbols': result,
+            'symbol_count': len(symbols),
+            'last_update': bridge_state.market_data.last_update.isoformat() if bridge_state.market_data.last_update else None
+        })
+
+
+@app.route('/api/closed_trades', methods=['POST'])
+def receive_closed_trades():
+    """Receive closed trade history from EA for learning feedback loop"""
+    data = request.get_json()
+    
+    deals = data.get('deals', [])
+    if deals:
+        bridge_state.closed_trades.add_trades(deals)
+    
+    return jsonify({'status': 'ok', 'trades_received': len(deals)})
+
+
+@app.route('/api/closed_trades', methods=['GET'])
+def get_closed_trades():
+    """Get closed trades for learning analysis"""
+    count = int(request.args.get('count', 50))
+    
+    trades = bridge_state.closed_trades.get_recent_trades(count)
+    stats = bridge_state.closed_trades.get_stats()
+    
+    return jsonify({
+        'trades': trades,
+        'stats': stats
+    })
+
+
 # Trading system interface functions
 
 def send_trade_signal(symbol: str, action: str, volume: float, 
@@ -309,6 +514,43 @@ def get_mt5_positions() -> List[Dict]:
 def is_mt5_connected() -> bool:
     """Check if MT5 EA is connected"""
     return bridge_state.is_mt5_connected()
+
+
+def get_market_data_for_symbol(symbol: str, count: int = 200) -> tuple:
+    """Get market data for a symbol - returns (quote, bars)"""
+    quote = bridge_state.market_data.get_quote(symbol)
+    bars = bridge_state.market_data.get_bars(symbol, count)
+    return quote, bars
+
+
+def get_spread(symbol: str) -> float:
+    """Get current spread for a symbol in points"""
+    return bridge_state.market_data.get_spread(symbol)
+
+
+def get_bid_ask(symbol: str) -> tuple:
+    """Get current bid/ask for a symbol"""
+    return bridge_state.market_data.get_bid_ask(symbol)
+
+
+def get_available_symbols() -> List[str]:
+    """Get list of symbols with market data"""
+    return bridge_state.market_data.get_all_symbols()
+
+
+def has_market_data(symbol: str) -> bool:
+    """Check if we have market data for a symbol"""
+    return bridge_state.market_data.get_quote(symbol) is not None
+
+
+def get_closed_trades_for_learning(count: int = 50) -> List[Dict]:
+    """Get recent closed trades for learning feedback"""
+    return bridge_state.closed_trades.get_recent_trades(count)
+
+
+def get_trade_stats() -> Dict:
+    """Get trading statistics from closed trades"""
+    return bridge_state.closed_trades.get_stats()
 
 
 def wait_for_signal_result(signal_id: str, timeout: int = 30) -> Optional[Dict]:

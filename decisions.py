@@ -709,13 +709,42 @@ class VeteranTraderDecisionEngine:
         # Ensure minimum lot size of 0.01 and maximum of 1.0 for $100 account
         position_size = max(0.01, min(position_size, 1.0))
         
-        # 12. Determine trailing stop
+        # 12. COST-AWARE EDGE GATE - Reject trades where expected edge < costs
+        # This is critical for profitability - don't take marginal trades
+        spread_cost_pips = 2.0  # Typical spread for majors (will be updated from real data)
+        slippage_buffer_pips = 1.0  # Expected slippage
+        total_cost_pips = spread_cost_pips + slippage_buffer_pips
+        
+        # Expected edge = (TP distance in pips * win_rate) - (SL distance in pips * loss_rate)
+        # Simplified: expected_move = confidence * tp_pips - (1-confidence) * sl_pips
+        tp_pips = tp_distance / pip_size
+        sl_pips_calc = sl_distance / pip_size
+        expected_edge_pips = (confidence * tp_pips) - ((1 - confidence) * sl_pips_calc)
+        
+        # Require edge to be at least 2x the cost (spread + slippage)
+        min_edge_multiplier = 2.0
+        required_edge = total_cost_pips * min_edge_multiplier
+        
+        if expected_edge_pips < required_edge:
+            logger.debug(f"[EDGE GATE] {symbol} rejected: expected_edge={expected_edge_pips:.1f} pips < required={required_edge:.1f} pips")
+            return None
+        
+        # Also check if we're in a high-liquidity session (London/NY overlap is best)
+        current_hour = datetime.now().hour
+        is_high_liquidity = 8 <= current_hour <= 16  # London session (UTC)
+        
+        # Require higher edge outside high-liquidity sessions
+        if not is_high_liquidity and expected_edge_pips < required_edge * 1.5:
+            logger.debug(f"[EDGE GATE] {symbol} rejected: low liquidity session requires higher edge")
+            return None
+        
+        # 13. Determine trailing stop
         trailing_enabled = confidence > 0.7 and adx_value > 30
         trailing_distance = self.trailing_manager.calculate_trailing_distance(
             atr, adx_value, aggression
         ) if trailing_enabled else 0
         
-        # 13. Create final signal
+        # 14. Create final signal
         signal = TradingSignal(
             symbol=symbol,
             direction=direction,

@@ -613,29 +613,32 @@ def run_mt5_bridge(args):
                     time.sleep(5)
                     continue
                 
-                # Analyze each symbol
+                # Analyze each symbol using REAL market data from MT5
                 for symbol in symbols:
                     try:
-                        # Generate simulated price data for analysis
-                        # In production, this would come from MT5 via the EA
-                        np.random.seed(int(time.time()) + hash(symbol) % 1000)
-                        n_samples = 500
+                        # Get REAL market data from MT5 via the bridge API
+                        quote, bars = broker.get_market_data(symbol)
                         
-                        base_price = {'EURUSD': 1.1000, 'GBPUSD': 1.2700, 'USDJPY': 150.00, 'USDCHF': 0.8800}.get(symbol, 1.0)
-                        prices = [base_price]
-                        for i in range(n_samples - 1):
-                            change = np.random.normal(0.0001, 0.001)
-                            prices.append(prices[-1] * (1 + change))
+                        if not bars or len(bars) < 50:
+                            logger.debug(f"Insufficient market data for {symbol} - waiting for EA to send data")
+                            continue
                         
-                        df = pd.DataFrame({
-                            'open': prices,
-                            'high': [p * (1 + abs(np.random.normal(0, 0.002))) for p in prices],
-                            'low': [p * (1 - abs(np.random.normal(0, 0.002))) for p in prices],
-                            'close': prices,
-                            'volume': np.random.randint(1000, 10000, n_samples)
-                        })
-                        df.index = pd.date_range(end=current_time, periods=n_samples, freq='H')
-                        df['datetime'] = df.index
+                        # Convert bars to DataFrame for analysis
+                        df = pd.DataFrame(bars)
+                        df.columns = ['t', 'o', 'h', 'l', 'c', 'v'] if len(df.columns) == 6 else df.columns
+                        df = df.rename(columns={'t': 'timestamp', 'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+                        df = df.set_index('datetime')
+                        df = df.sort_index()
+                        
+                        # Get current spread for cost-aware trading
+                        current_spread = quote.get('spread', 0.0) if quote else 0.0
+                        stop_level = quote.get('stop_level', 0) if quote else 0
+                        point = quote.get('point', 0.00001) if quote else 0.00001
+                        
+                        # Log that we're using real data
+                        if iteration % 60 == 0:
+                            logger.info(f"[REAL DATA] {symbol}: {len(df)} bars, spread={current_spread:.1f} pts, bid={quote.get('bid', 0):.5f}")
                         
                         # Detect regime
                         regime = regime_manager.detect_regime(df)

@@ -2,231 +2,249 @@
 //|                                            TradingBridgeEA.mq5   |
 //|                                    AI Trading System Bridge      |
 //|                                  Connects to AWS Trading Brain   |
+//|                          v2.0 - With Live Market Data Feed       |
 //+------------------------------------------------------------------+
 #property copyright "AI Trading System"
 #property link      ""
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 
-input string   API_URL = "http://13.222.99.140:5000";  // AWS API URL
-input int      POLL_INTERVAL = 5;                       // Poll interval in seconds
-input int      MAGIC_NUMBER = 123456;                   // Magic number for trades
-input double   MAX_SLIPPAGE = 20;                       // Maximum slippage in points
-input bool     ENABLE_TRADING = true;                   // Enable live trading
+input string   API_URL = "http://13.222.99.140:5000";
+input int      POLL_INTERVAL = 5;
+input int      MAGIC_NUMBER = 123456;
+input double   MAX_SLIPPAGE = 20;
+input bool     ENABLE_TRADING = true;
+input int      BARS_TO_SEND = 200;
+input string   SYMBOLS_TO_TRACK = "EURUSD,GBPUSD,USDJPY,USDCHF,AUDUSD,USDCAD,NZDUSD,EURGBP";
 
 CTrade trade;
-int lastPollTime = 0;
 string lastSignalId = "";
+datetime lastBarTime[];
+datetime lastDealTime = 0;
+bool initialDataSent = false;
+string symbolsArray[];
 
-//+------------------------------------------------------------------+
-//| Expert initialization function                                     |
-//+------------------------------------------------------------------+
 int OnInit()
 {
    trade.SetExpertMagicNumber(MAGIC_NUMBER);
    trade.SetDeviationInPoints((ulong)MAX_SLIPPAGE);
    trade.SetTypeFilling(ORDER_FILLING_IOC);
    
-   Print("TradingBridgeEA initialized");
-   Print("API URL: ", API_URL);
-   Print("Poll Interval: ", POLL_INTERVAL, " seconds");
-   Print("Trading Enabled: ", ENABLE_TRADING);
+   StringSplit(SYMBOLS_TO_TRACK, ',', symbolsArray);
+   ArrayResize(lastBarTime, ArraySize(symbolsArray));
    
-   // Register with the API
+   for(int i = 0; i < ArraySize(symbolsArray); i++)
+   {
+      string sym = symbolsArray[i];
+      StringTrimLeft(sym);
+      StringTrimRight(sym);
+      symbolsArray[i] = sym;
+      SymbolSelect(sym, true);
+      lastBarTime[i] = 0;
+   }
+   
+   Print("TradingBridgeEA v2.0 initialized - Tracking ", ArraySize(symbolsArray), " symbols");
    RegisterWithAPI();
-   
-   // Set timer for polling
    EventSetTimer(POLL_INTERVAL);
-   
    return(INIT_SUCCEEDED);
 }
 
-//+------------------------------------------------------------------+
-//| Expert deinitialization function                                   |
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason)
-{
-   EventKillTimer();
-   Print("TradingBridgeEA stopped. Reason: ", reason);
-}
-
-//+------------------------------------------------------------------+
-//| Timer function - polls API for signals                            |
-//+------------------------------------------------------------------+
+void OnDeinit(const int reason) { EventKillTimer(); }
 void OnTimer()
 {
-   // Send account info to API
    SendAccountInfo();
-   
-   // Poll for trade signals
+   SendMarketData();
+   SendClosedTrades();
    PollForSignals();
-   
-   // Send position updates
    SendPositionUpdates();
 }
+void OnTick() {}
 
-//+------------------------------------------------------------------+
-//| Expert tick function                                               |
-//+------------------------------------------------------------------+
-void OnTick()
-{
-   // Can add tick-based logic here if needed
-}
-
-//+------------------------------------------------------------------+
-//| Register EA with the API                                          |
-//+------------------------------------------------------------------+
 void RegisterWithAPI()
 {
    string url = API_URL + "/api/register";
    string headers = "Content-Type: application/json\r\n";
-   
    string jsonBody = StringFormat(
-      "{\"login\":%d,\"server\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"leverage\":%d}",
-      AccountInfoInteger(ACCOUNT_LOGIN),
-      AccountInfoString(ACCOUNT_SERVER),
-      AccountInfoDouble(ACCOUNT_BALANCE),
-      AccountInfoDouble(ACCOUNT_EQUITY),
-      AccountInfoInteger(ACCOUNT_LEVERAGE)
-   );
-   
-   char data[];
-   char result[];
-   string resultHeaders;
-   
+      "{\"login\":%d,\"server\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"leverage\":%d,\"version\":\"2.0\"}",
+      AccountInfoInteger(ACCOUNT_LOGIN), AccountInfoString(ACCOUNT_SERVER),
+      AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoDouble(ACCOUNT_EQUITY),
+      AccountInfoInteger(ACCOUNT_LEVERAGE));
+   char data[], result[]; string resultHeaders;
    StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
    ArrayResize(data, StringLen(jsonBody));
-   
    int res = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
-   
-   if(res == -1)
-   {
-      int error = GetLastError();
-      Print("Registration failed. Error: ", error);
-      if(error == 4060)
-         Print("Add ", API_URL, " to allowed URLs in Tools -> Options -> Expert Advisors");
-   }
-   else
-   {
-      string response = CharArrayToString(result);
-      Print("Registered with API: ", response);
-   }
+   if(res == -1) { Print("Registration failed. Error: ", GetLastError()); }
+   else { Print("Registered with API: ", CharArrayToString(result)); }
 }
 
-//+------------------------------------------------------------------+
-//| Send account information to API                                   |
-//+------------------------------------------------------------------+
 void SendAccountInfo()
 {
    string url = API_URL + "/api/account";
    string headers = "Content-Type: application/json\r\n";
-   
    string jsonBody = StringFormat(
-      "{\"login\":%d,\"server\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"margin_level\":%.2f,\"leverage\":%d,\"profit\":%.2f,\"currency\":\"%s\"}",
-      AccountInfoInteger(ACCOUNT_LOGIN),
-      AccountInfoString(ACCOUNT_SERVER),
-      AccountInfoDouble(ACCOUNT_BALANCE),
-      AccountInfoDouble(ACCOUNT_EQUITY),
-      AccountInfoDouble(ACCOUNT_MARGIN),
-      AccountInfoDouble(ACCOUNT_MARGIN_FREE),
-      AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),
-      AccountInfoInteger(ACCOUNT_LEVERAGE),
-      AccountInfoDouble(ACCOUNT_PROFIT),
-      AccountInfoString(ACCOUNT_CURRENCY)
-   );
-   
-   char data[];
-   char result[];
-   string resultHeaders;
-   
+      "{\"login\":%d,\"server\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"leverage\":%d,\"profit\":%.2f}",
+      AccountInfoInteger(ACCOUNT_LOGIN), AccountInfoString(ACCOUNT_SERVER),
+      AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoDouble(ACCOUNT_EQUITY),
+      AccountInfoDouble(ACCOUNT_MARGIN), AccountInfoDouble(ACCOUNT_MARGIN_FREE),
+      AccountInfoInteger(ACCOUNT_LEVERAGE), AccountInfoDouble(ACCOUNT_PROFIT));
+   char data[], result[]; string resultHeaders;
    StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
    ArrayResize(data, StringLen(jsonBody));
-   
-   int res = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
-   
-   if(res == -1)
-   {
-      int error = GetLastError();
-      if(error != 4060)  // Don't spam URL error
-         Print("Account update failed. Error: ", error);
-   }
+   WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
 }
 
-//+------------------------------------------------------------------+
-//| Poll API for trade signals                                        |
-//+------------------------------------------------------------------+
+void SendMarketData()
+{
+   string url = API_URL + "/api/market_data";
+   string headers = "Content-Type: application/json\r\n";
+   string symbolsJson = "";
+   
+   for(int i = 0; i < ArraySize(symbolsArray); i++)
+   {
+      string symbol = symbolsArray[i];
+      double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+      double spread = (ask - bid) / SymbolInfoDouble(symbol, SYMBOL_POINT);
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+      long stopLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+      long freezeLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+      double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+      double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      
+      datetime currentBarTime = iTime(symbol, PERIOD_M1, 0);
+      bool sendBars = (!initialDataSent || currentBarTime != lastBarTime[i]);
+      
+      string barsJson = "[]";
+      if(sendBars)
+      {
+         int barsToSend = initialDataSent ? 5 : BARS_TO_SEND;
+         MqlRates rates[];
+         int copied = CopyRates(symbol, PERIOD_M1, 0, barsToSend, rates);
+         if(copied > 0)
+         {
+            barsJson = "[";
+            for(int j = 0; j < copied; j++)
+            {
+               if(j > 0) barsJson += ",";
+               barsJson += StringFormat("{\"t\":%d,\"o\":%.5f,\"h\":%.5f,\"l\":%.5f,\"c\":%.5f,\"v\":%d}",
+                  (long)rates[j].time, rates[j].open, rates[j].high, rates[j].low, rates[j].close, (long)rates[j].tick_volume);
+            }
+            barsJson += "]";
+            lastBarTime[i] = currentBarTime;
+         }
+      }
+      
+      if(i > 0) symbolsJson += ",";
+      symbolsJson += StringFormat(
+         "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"spread\":%.1f,\"digits\":%d,\"point\":%.6f,\"stop_level\":%d,\"freeze_level\":%d,\"tick_value\":%.5f,\"min_lot\":%.2f,\"lot_step\":%.2f,\"bars\":%s}",
+         symbol, bid, ask, spread, digits, point, stopLevel, freezeLevel, tickValue, minLot, lotStep, barsJson);
+   }
+   
+   string jsonBody = StringFormat("{\"ts\":%d,\"symbols\":[%s],\"initial\":%s}",
+      (long)TimeCurrent(), symbolsJson, initialDataSent ? "false" : "true");
+   
+   char data[], result[]; string resultHeaders;
+   StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
+   ArrayResize(data, StringLen(jsonBody));
+   int res = WebRequest("POST", url, headers, 10000, data, result, resultHeaders);
+   if(res != -1 && !initialDataSent) { Print("Initial market data sent"); initialDataSent = true; }
+}
+
+void SendClosedTrades()
+{
+   string url = API_URL + "/api/closed_trades";
+   string headers = "Content-Type: application/json\r\n";
+   datetime fromTime = lastDealTime > 0 ? lastDealTime : TimeCurrent() - 86400;
+   if(!HistorySelect(fromTime, TimeCurrent())) return;
+   
+   int totalDeals = HistoryDealsTotal();
+   if(totalDeals == 0) return;
+   
+   string dealsJson = "";
+   int newDeals = 0;
+   datetime latestDealTime = lastDealTime;
+   
+   for(int i = 0; i < totalDeals; i++)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
+      
+      datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(dealTime <= lastDealTime) continue;
+      
+      long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+      if(magic != 0 && magic != MAGIC_NUMBER) continue;
+      
+      string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      double volume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      double price = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      double commission = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      double swap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+      long positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      string comment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+      
+      if(newDeals > 0) dealsJson += ",";
+      dealsJson += StringFormat(
+         "{\"ticket\":%d,\"symbol\":\"%s\",\"type\":\"%s\",\"volume\":%.2f,\"price\":%.5f,\"profit\":%.2f,\"commission\":%.2f,\"swap\":%.2f,\"position_id\":%d,\"comment\":\"%s\",\"time\":%d}",
+         dealTicket, symbol, type == DEAL_TYPE_BUY ? "buy" : "sell", volume, price, profit, commission, swap, positionId, comment, (long)dealTime);
+      
+      newDeals++;
+      if(dealTime > latestDealTime) latestDealTime = dealTime;
+   }
+   
+   if(newDeals == 0) return;
+   
+   string jsonBody = StringFormat("{\"deals\":[%s],\"count\":%d}", dealsJson, newDeals);
+   char data[], result[]; string resultHeaders;
+   StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
+   ArrayResize(data, StringLen(jsonBody));
+   int res = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
+   if(res != -1) { Print("Sent ", newDeals, " closed trades for learning"); lastDealTime = latestDealTime; }
+}
+
 void PollForSignals()
 {
    string url = API_URL + "/api/signals";
    string headers = "Content-Type: application/json\r\n";
-   
-   char data[];
-   char result[];
-   string resultHeaders;
-   
+   char data[], result[]; string resultHeaders;
    int res = WebRequest("GET", url, headers, 5000, data, result, resultHeaders);
-   
-   if(res == -1)
-   {
-      int error = GetLastError();
-      if(error != 4060)
-         Print("Signal poll failed. Error: ", error);
-      return;
-   }
-   
+   if(res == -1) return;
    string response = CharArrayToString(result);
-   
-   // Parse and execute signals
    ProcessSignals(response);
 }
 
-//+------------------------------------------------------------------+
-//| Process trade signals from API                                    |
-//+------------------------------------------------------------------+
 void ProcessSignals(string jsonResponse)
 {
-   // Simple JSON parsing for signals array
-   // Format: {"signals":[{"id":"xxx","symbol":"EURUSD","action":"buy","volume":0.01,"sl":1.0900,"tp":1.1100}]}
-   
-   if(StringFind(jsonResponse, "\"signals\":[]") >= 0)
-      return;  // No signals
-   
+   if(StringFind(jsonResponse, "\"signals\":[]") >= 0) return;
    int signalsStart = StringFind(jsonResponse, "\"signals\":[");
-   if(signalsStart < 0)
-      return;
+   if(signalsStart < 0) return;
    
-   // Find each signal object
    int pos = signalsStart;
    while(true)
    {
       int objStart = StringFind(jsonResponse, "{\"id\":", pos);
-      if(objStart < 0)
-         break;
-      
+      if(objStart < 0) break;
       int objEnd = StringFind(jsonResponse, "}", objStart);
-      if(objEnd < 0)
-         break;
-      
+      if(objEnd < 0) break;
       string signalJson = StringSubstr(jsonResponse, objStart, objEnd - objStart + 1);
       ExecuteSignal(signalJson);
-      
       pos = objEnd + 1;
    }
 }
 
-//+------------------------------------------------------------------+
-//| Execute a single trade signal                                     |
-//+------------------------------------------------------------------+
 void ExecuteSignal(string signalJson)
 {
-   // Parse signal fields
    string signalId = ExtractJsonString(signalJson, "id");
-   
-   // Skip if already processed
-   if(signalId == lastSignalId)
-      return;
+   if(signalId == lastSignalId) return;
    
    string symbol = ExtractJsonString(signalJson, "symbol");
    string action = ExtractJsonString(signalJson, "action");
@@ -235,236 +253,93 @@ void ExecuteSignal(string signalJson)
    double tp = ExtractJsonDouble(signalJson, "tp");
    string comment = ExtractJsonString(signalJson, "comment");
    
-   if(symbol == "" || action == "" || volume <= 0)
-   {
-      Print("Invalid signal: ", signalJson);
-      return;
-   }
+   if(symbol == "" || action == "" || volume <= 0) { Print("Invalid signal"); return; }
    
    Print("Processing signal: ", signalId, " - ", symbol, " ", action, " ", volume, " lots");
    
-   if(!ENABLE_TRADING)
-   {
-      Print("Trading disabled - signal not executed");
-      SendSignalResult(signalId, false, 0, "Trading disabled");
-      lastSignalId = signalId;
-      return;
-   }
+   if(!ENABLE_TRADING) { SendSignalResult(signalId, false, 0, "Trading disabled"); lastSignalId = signalId; return; }
+   if(!SymbolSelect(symbol, true)) { SendSignalResult(signalId, false, 0, "Symbol not found"); lastSignalId = signalId; return; }
    
-   // Ensure symbol is selected
-   if(!SymbolSelect(symbol, true))
-   {
-      Print("Failed to select symbol: ", symbol);
-      SendSignalResult(signalId, false, 0, "Symbol not found");
-      lastSignalId = signalId;
-      return;
-   }
-   
-   // Get current price and symbol info
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
    long stopLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minStopDistance = stopLevel * point;
+   long freezeLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist = MathMax(stopLevel, freezeLevel) * point;
    
-   // Normalize SL/TP to symbol digits
    sl = NormalizeDouble(sl, digits);
    tp = NormalizeDouble(tp, digits);
-   
-   // Validate and adjust SL/TP if too close to price
-   if(action == "buy" && sl > 0)
-   {
-      double minSL = NormalizeDouble(ask - minStopDistance, digits);
-      if(sl > minSL) sl = minSL;
-   }
-   else if(action == "sell" && sl > 0)
-   {
-      double minSL = NormalizeDouble(bid + minStopDistance, digits);
-      if(sl < minSL) sl = minSL;
-   }
+   double origSL = sl, origTP = tp;
    
    bool success = false;
    ulong ticket = 0;
    string errorMsg = "";
    
-   // Get freeze level as well (can also cause invalid stops)
-   long freezeLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL);
-   double minDist = MathMax(stopLevel, freezeLevel) * point;
-   
-   // Store original SL/TP for fallback modify
-   double origSL = sl;
-   double origTP = tp;
-   
-   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, 
-         " bid=", bid, " ask=", ask, " stopLevel=", stopLevel, " freezeLevel=", freezeLevel);
+   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, " bid=", bid, " ask=", ask);
    
    if(action == "buy")
    {
-      // Validate SL/TP for BUY: SL must be below bid-minDist, TP must be above ask+minDist
-      if(sl > 0 && sl > bid - minDist)
-      {
-         sl = NormalizeDouble(bid - minDist - 10*point, digits);  // Add extra buffer
-         Print("Adjusted BUY SL from ", origSL, " to ", sl);
-      }
-      if(tp > 0 && tp < ask + minDist)
-      {
-         tp = NormalizeDouble(ask + minDist + 10*point, digits);  // Add extra buffer
-         Print("Adjusted BUY TP from ", origTP, " to ", tp);
-      }
+      if(sl > 0 && sl > bid - minDist) sl = NormalizeDouble(bid - minDist - 10*point, digits);
+      if(tp > 0 && tp < ask + minDist) tp = NormalizeDouble(ask + minDist + 10*point, digits);
       
       success = trade.Buy(volume, symbol, ask, sl, tp, comment);
-      if(success)
+      if(success) { ticket = trade.ResultOrder(); }
+      else if(trade.ResultRetcode() == 10016)
       {
-         ticket = trade.ResultOrder();
-      }
-      else if(trade.ResultRetcode() == 10016)  // Invalid stops - try without stops then modify
-      {
-         Print("Buy with stops failed (10016), retrying without stops...");
          success = trade.Buy(volume, symbol, ask, 0, 0, comment);
-         if(success)
-         {
-            ticket = trade.ResultOrder();
-            Print("Buy without stops succeeded, ticket=", ticket, ", now modifying...");
-            // Wait a moment for position to be registered
-            Sleep(100);
-            // Try to modify with original SL/TP
-            if(!trade.PositionModify(ticket, origSL, origTP))
-            {
-               Print("PositionModify failed: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
-               // Position is open but without stops - still report success
-            }
-            else
-            {
-               Print("PositionModify succeeded with SL=", origSL, " TP=", origTP);
-            }
-         }
-         else
-         {
-            errorMsg = StringFormat("Buy failed (even without stops): %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
-         }
+         if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
+         else { errorMsg = StringFormat("Buy failed: %d", trade.ResultRetcode()); }
       }
-      else
-      {
-         errorMsg = StringFormat("Buy failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
-      }
+      else { errorMsg = StringFormat("Buy failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription()); }
    }
    else if(action == "sell")
    {
-      // Validate SL/TP for SELL: SL must be above ask+minDist, TP must be below bid-minDist
-      if(sl > 0 && sl < ask + minDist)
-      {
-         sl = NormalizeDouble(ask + minDist + 10*point, digits);  // Add extra buffer
-         Print("Adjusted SELL SL from ", origSL, " to ", sl);
-      }
-      if(tp > 0 && tp > bid - minDist)
-      {
-         tp = NormalizeDouble(bid - minDist - 10*point, digits);  // Add extra buffer
-         Print("Adjusted SELL TP from ", origTP, " to ", tp);
-      }
+      if(sl > 0 && sl < ask + minDist) sl = NormalizeDouble(ask + minDist + 10*point, digits);
+      if(tp > 0 && tp > bid - minDist) tp = NormalizeDouble(bid - minDist - 10*point, digits);
       
       success = trade.Sell(volume, symbol, bid, sl, tp, comment);
-      if(success)
+      if(success) { ticket = trade.ResultOrder(); }
+      else if(trade.ResultRetcode() == 10016)
       {
-         ticket = trade.ResultOrder();
-      }
-      else if(trade.ResultRetcode() == 10016)  // Invalid stops - try without stops then modify
-      {
-         Print("Sell with stops failed (10016), retrying without stops...");
          success = trade.Sell(volume, symbol, bid, 0, 0, comment);
-         if(success)
-         {
-            ticket = trade.ResultOrder();
-            Print("Sell without stops succeeded, ticket=", ticket, ", now modifying...");
-            // Wait a moment for position to be registered
-            Sleep(100);
-            // Try to modify with original SL/TP
-            if(!trade.PositionModify(ticket, origSL, origTP))
-            {
-               Print("PositionModify failed: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
-               // Position is open but without stops - still report success
-            }
-            else
-            {
-               Print("PositionModify succeeded with SL=", origSL, " TP=", origTP);
-            }
-         }
-         else
-         {
-            errorMsg = StringFormat("Sell failed (even without stops): %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
-         }
+         if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
+         else { errorMsg = StringFormat("Sell failed: %d", trade.ResultRetcode()); }
       }
-      else
-      {
-         errorMsg = StringFormat("Sell failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
-      }
+      else { errorMsg = StringFormat("Sell failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription()); }
    }
    else if(action == "close")
    {
       ulong posTicket = (ulong)ExtractJsonDouble(signalJson, "ticket");
-      if(posTicket > 0)
-      {
-         success = trade.PositionClose(posTicket);
-         if(!success)
-            errorMsg = StringFormat("Close failed: %d", trade.ResultRetcode());
-      }
+      if(posTicket > 0) { success = trade.PositionClose(posTicket); if(!success) errorMsg = StringFormat("Close failed: %d", trade.ResultRetcode()); }
    }
    else if(action == "modify")
    {
       ulong posTicket = (ulong)ExtractJsonDouble(signalJson, "ticket");
-      if(posTicket > 0)
-      {
-         success = trade.PositionModify(posTicket, sl, tp);
-         if(!success)
-            errorMsg = StringFormat("Modify failed: %d", trade.ResultRetcode());
-      }
+      if(posTicket > 0) { success = trade.PositionModify(posTicket, sl, tp); if(!success) errorMsg = StringFormat("Modify failed: %d", trade.ResultRetcode()); }
    }
    
-   // Send result back to API
    SendSignalResult(signalId, success, ticket, errorMsg);
-   
    lastSignalId = signalId;
-   
-   if(success)
-      Print("Signal executed successfully. Ticket: ", ticket);
-   else
-      Print("Signal execution failed: ", errorMsg);
+   if(success) Print("Signal executed. Ticket: ", ticket);
+   else Print("Signal failed: ", errorMsg);
 }
 
-//+------------------------------------------------------------------+
-//| Send signal execution result to API                               |
-//+------------------------------------------------------------------+
 void SendSignalResult(string signalId, bool success, ulong ticket, string error)
 {
    string url = API_URL + "/api/signal_result";
    string headers = "Content-Type: application/json\r\n";
-   
-   string jsonBody = StringFormat(
-      "{\"signal_id\":\"%s\",\"success\":%s,\"ticket\":%d,\"error\":\"%s\"}",
-      signalId,
-      success ? "true" : "false",
-      ticket,
-      error
-   );
-   
-   char data[];
-   char result[];
-   string resultHeaders;
-   
+   string jsonBody = StringFormat("{\"signal_id\":\"%s\",\"success\":%s,\"ticket\":%d,\"error\":\"%s\"}", signalId, success ? "true" : "false", ticket, error);
+   char data[], result[]; string resultHeaders;
    StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
    ArrayResize(data, StringLen(jsonBody));
-   
    WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
 }
 
-//+------------------------------------------------------------------+
-//| Send position updates to API                                      |
-//+------------------------------------------------------------------+
 void SendPositionUpdates()
 {
    string url = API_URL + "/api/positions";
    string headers = "Content-Type: application/json\r\n";
-   
    string positionsJson = "[";
    int total = PositionsTotal();
    
@@ -473,81 +348,49 @@ void SendPositionUpdates()
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0)
       {
-         if(i > 0)
-            positionsJson += ",";
-         
+         if(i > 0) positionsJson += ",";
          positionsJson += StringFormat(
             "{\"ticket\":%d,\"symbol\":\"%s\",\"type\":\"%s\",\"volume\":%.2f,\"price_open\":%.5f,\"price_current\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"swap\":%.2f,\"time\":%d}",
-            ticket,
-            PositionGetString(POSITION_SYMBOL),
+            ticket, PositionGetString(POSITION_SYMBOL),
             PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "buy" : "sell",
-            PositionGetDouble(POSITION_VOLUME),
-            PositionGetDouble(POSITION_PRICE_OPEN),
-            PositionGetDouble(POSITION_PRICE_CURRENT),
-            PositionGetDouble(POSITION_SL),
-            PositionGetDouble(POSITION_TP),
-            PositionGetDouble(POSITION_PROFIT),
-            PositionGetDouble(POSITION_SWAP),
-            PositionGetInteger(POSITION_TIME)
-         );
+            PositionGetDouble(POSITION_VOLUME), PositionGetDouble(POSITION_PRICE_OPEN),
+            PositionGetDouble(POSITION_PRICE_CURRENT), PositionGetDouble(POSITION_SL),
+            PositionGetDouble(POSITION_TP), PositionGetDouble(POSITION_PROFIT),
+            PositionGetDouble(POSITION_SWAP), PositionGetInteger(POSITION_TIME));
       }
    }
-   
    positionsJson += "]";
    
    string jsonBody = "{\"positions\":" + positionsJson + "}";
-   
-   char data[];
-   char result[];
-   string resultHeaders;
-   
+   char data[], result[]; string resultHeaders;
    StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
    ArrayResize(data, StringLen(jsonBody));
-   
    WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
 }
 
-//+------------------------------------------------------------------+
-//| Extract string value from JSON                                    |
-//+------------------------------------------------------------------+
 string ExtractJsonString(string json, string key)
 {
    string searchKey = "\"" + key + "\":\"";
    int start = StringFind(json, searchKey);
-   if(start < 0)
-      return "";
-   
+   if(start < 0) return "";
    start += StringLen(searchKey);
    int end = StringFind(json, "\"", start);
-   if(end < 0)
-      return "";
-   
+   if(end < 0) return "";
    return StringSubstr(json, start, end - start);
 }
 
-//+------------------------------------------------------------------+
-//| Extract double value from JSON                                    |
-//+------------------------------------------------------------------+
 double ExtractJsonDouble(string json, string key)
 {
    string searchKey = "\"" + key + "\":";
    int start = StringFind(json, searchKey);
-   if(start < 0)
-      return 0;
-   
+   if(start < 0) return 0;
    start += StringLen(searchKey);
-   
-   // Find end of number (comma, }, or end of string)
    int end = start;
    while(end < StringLen(json))
    {
       ushort c = StringGetCharacter(json, end);
-      if(c == ',' || c == '}' || c == ' ')
-         break;
+      if(c == ',' || c == '}' || c == ' ') break;
       end++;
    }
-   
-   string valueStr = StringSubstr(json, start, end - start);
-   return StringToDouble(valueStr);
+   return StringToDouble(StringSubstr(json, start, end - start));
 }
-//+------------------------------------------------------------------+

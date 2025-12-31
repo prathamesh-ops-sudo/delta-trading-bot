@@ -286,11 +286,72 @@ class MT5BrokerAdapter:
         return []
     
     def get_current_price(self, symbol: str) -> Optional[Dict]:
-        """Get current bid/ask price (from positions or defaults)"""
-        # In a full implementation, the EA would send tick data
-        # For now, return defaults
+        """Get current bid/ask price from real market data"""
+        quote, _ = self.get_market_data(symbol)
+        if quote:
+            return {'bid': quote.get('bid', 0), 'ask': quote.get('ask', 0)}
+        # Fallback to defaults if no market data
         info = self.get_symbol_info(symbol)
         return {'bid': info['bid'], 'ask': info['ask']}
+    
+    def get_market_data(self, symbol: str, count: int = 200) -> tuple:
+        """Get real market data (quote + OHLC bars) from MT5 via bridge"""
+        try:
+            response = requests.get(
+                f"{self.api_url}/api/market_data",
+                params={'symbol': symbol, 'count': count},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                quote = data.get('quote', {})
+                bars = data.get('bars', [])
+                return quote, bars
+        except Exception as e:
+            logger.debug(f"Error getting market data for {symbol}: {e}")
+        
+        return None, []
+    
+    def get_spread(self, symbol: str) -> float:
+        """Get current spread for a symbol in points"""
+        quote, _ = self.get_market_data(symbol)
+        return quote.get('spread', 0.0) if quote else 0.0
+    
+    def has_market_data(self, symbol: str) -> bool:
+        """Check if we have real market data for a symbol"""
+        quote, bars = self.get_market_data(symbol)
+        return quote is not None and len(bars) > 0
+    
+    def get_closed_trades(self, count: int = 50) -> List[Dict]:
+        """Get closed trades for learning feedback"""
+        try:
+            response = requests.get(
+                f"{self.api_url}/api/closed_trades",
+                params={'count': count},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('trades', [])
+        except Exception as e:
+            logger.debug(f"Error getting closed trades: {e}")
+        
+        return []
+    
+    def get_trade_stats(self) -> Dict:
+        """Get trading statistics from closed trades"""
+        try:
+            response = requests.get(
+                f"{self.api_url}/api/closed_trades",
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('stats', {})
+        except Exception as e:
+            logger.debug(f"Error getting trade stats: {e}")
+        
+        return {}
     
     def is_connected(self) -> bool:
         """Check if connected to MT5 via bridge"""
