@@ -11,7 +11,7 @@
 
 #include <Trade\Trade.mqh>
 
-input string   API_URL = "http://13.222.99.140:5000";
+input string   API_URL = "http://3.234.141.231:5000";
 input int      POLL_INTERVAL = 5;
 input int      MAGIC_NUMBER = 123456;
 input double   MAX_SLIPPAGE = 20;
