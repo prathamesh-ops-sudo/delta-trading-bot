@@ -71,6 +71,20 @@ except ImportError:
     get_adaptive_learning = None
     record_trade_outcome = None
 
+try:
+    from trade_journaling import (
+        get_journaling_engine,
+        evaluate_trade,
+        TradeJournalingEngine,
+        UncertaintyLevel,
+        TradeOutcomeType
+    )
+    TRADE_JOURNALING_AVAILABLE = True
+except ImportError:
+    TRADE_JOURNALING_AVAILABLE = False
+    get_journaling_engine = None
+    evaluate_trade = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -566,6 +580,9 @@ class VeteranTraderDecisionEngine:
         # Adaptive learning engine for online/offline learning
         self.adaptive_learning = get_adaptive_learning() if ADAPTIVE_LEARNING_AVAILABLE else None
         
+        # Trade journaling and uncertainty governor for human-like decision making
+        self.journaling_engine = get_journaling_engine() if TRADE_JOURNALING_AVAILABLE else None
+        
         # Decision thresholds - INCREASED for higher-quality trades
         # Most retail forex systems lose money by overtrading
         # Better to take fewer, higher-quality trades with clear edge
@@ -585,7 +602,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -860,6 +877,55 @@ class VeteranTraderDecisionEngine:
             except Exception as e:
                 logger.warning(f"Adaptive learning error: {e}")
         
+        # Apply uncertainty governor - human-like "I don't know" decision making
+        uncertainty_position_multiplier = 1.0
+        if self.journaling_engine:
+            try:
+                # Build uncertainty factors from available data
+                uncertainty_factors = {
+                    'technical': 0.3 if adx_value > 25 else 0.6,  # Higher uncertainty when no clear trend
+                    'regime': 0.3 if regime.value in ['trending', 'volatile'] else 0.5,
+                    'volatility': 0.4 if atr > 0 else 0.6,
+                }
+                
+                # Add macro uncertainty if available
+                if macro_regime:
+                    vix_level = macro_regime.get('vix_level', 'normal')
+                    uncertainty_factors['fundamental'] = 0.3 if vix_level == 'low' else (0.7 if vix_level == 'extreme' else 0.5)
+                
+                # Add advanced knowledge uncertainty if available
+                if advanced_context:
+                    ak_confidence = advanced_context.get('confidence', 0.5)
+                    uncertainty_factors['sentiment'] = 1.0 - ak_confidence
+                
+                # Evaluate trade opportunity with uncertainty
+                direction_str = "BUY" if direction == TradeDirection.LONG else "SELL"
+                evaluation = self.journaling_engine.evaluate_trade_opportunity(
+                    symbol=symbol,
+                    direction=direction_str,
+                    confidence=confidence,
+                    uncertainty_factors=uncertainty_factors,
+                    supporting_factors=[entry_reason],
+                    opposing_factors=[],
+                    regime=regime.value if hasattr(regime, 'value') else str(regime),
+                    session=self.adaptive_learning.market_hours.get_current_session().value if self.adaptive_learning else "unknown"
+                )
+                
+                # Check if uncertainty governor says "I don't know"
+                if not evaluation.get('should_trade', True):
+                    logger.info(f"[UNCERTAINTY GOVERNOR] {symbol} rejected: {evaluation.get('reason', 'Too uncertain')}")
+                    return None
+                
+                # Apply position multiplier based on uncertainty
+                uncertainty_position_multiplier = evaluation.get('position_multiplier', 1.0)
+                
+                # Log uncertainty analysis
+                logger.debug(f"Uncertainty analysis for {symbol}: level={evaluation.get('uncertainty_level')}, "
+                           f"multiplier={uncertainty_position_multiplier:.2f}")
+                
+            except Exception as e:
+                logger.warning(f"Uncertainty governor error: {e}")
+        
         confidence = min(confidence, 0.95)  # Cap at 95%
         
         if confidence < self.min_confidence:
@@ -905,6 +971,8 @@ class VeteranTraderDecisionEngine:
         pip_value_per_lot = 10.0  # USD per pip per standard lot
         sl_pips = sl_distance * 10000 if 'JPY' not in symbol else sl_distance * 100
         position_size = risk_amount / (sl_pips * pip_value_per_lot) if sl_pips > 0 else 0
+        # Apply uncertainty governor position multiplier (reduces size when uncertain)
+        position_size *= uncertainty_position_multiplier
         # Ensure minimum lot size of 0.01 and maximum of 1.0 for $100 account
         position_size = max(0.01, min(position_size, 1.0))
         

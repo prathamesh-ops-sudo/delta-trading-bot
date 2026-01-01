@@ -564,6 +564,19 @@ def run_mt5_bridge(args):
         adaptive_learning = None
         logger.warning(f"Adaptive learning not available: {e}")
     
+    # Trade Journaling - Human-like decision making with uncertainty governor
+    try:
+        from trade_journaling import get_journaling_engine
+        journaling_engine = get_journaling_engine()
+        TRADE_JOURNALING_AVAILABLE = True
+        # Start background journal analysis (every 30 minutes)
+        journaling_engine.start_background_analysis(interval_minutes=30)
+        logger.info(f"Trade journaling engine started - Uncertainty governor active, {len(journaling_engine.journal.entries)} journal entries")
+    except ImportError as e:
+        TRADE_JOURNALING_AVAILABLE = False
+        journaling_engine = None
+        logger.warning(f"Trade journaling not available: {e}")
+    
     try:
         from phoenix_brain import phoenix_brain, TradingState
         PHOENIX_BRAIN_AVAILABLE = True
@@ -588,6 +601,7 @@ def run_mt5_bridge(args):
     logger.info(f"Phoenix components - Knowledge: {KNOWLEDGE_ENGINE_AVAILABLE}, Brain: {PHOENIX_BRAIN_AVAILABLE}, Memory: {VECTOR_MEMORY_AVAILABLE}")
     logger.info(f"Advanced Knowledge - Calendar/Sentiment/CrossAsset: {ADVANCED_KNOWLEDGE_AVAILABLE}")
     logger.info(f"Adaptive Learning - Online/Offline: {ADAPTIVE_LEARNING_AVAILABLE}")
+    logger.info(f"Trade Journaling - Uncertainty Governor: {TRADE_JOURNALING_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread
