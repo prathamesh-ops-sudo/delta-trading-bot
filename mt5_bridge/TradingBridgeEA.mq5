@@ -272,8 +272,27 @@ void ExecuteSignal(string signalJson)
    if(!ENABLE_TRADING) { SendSignalResult(signalId, false, 0, "Trading disabled"); lastSignalId = signalId; return; }
    if(!SymbolSelect(symbol, true)) { SendSignalResult(signalId, false, 0, "Symbol not found"); lastSignalId = signalId; return; }
    
-   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   // Check for fresh quotes before trading
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol, tick))
+   {
+      SendSignalResult(signalId, false, 0, "Cannot get tick data");
+      lastSignalId = signalId;
+      return;
+   }
+   
+   // Check if quotes are stale (more than 60 seconds old = likely market closed/holiday)
+   datetime tickAge = TimeCurrent() - tick.time;
+   if(tickAge > 60)
+   {
+      Print("Stale quotes detected for ", symbol, " - tick age: ", tickAge, " seconds. Market may be closed.");
+      SendSignalResult(signalId, false, 0, StringFormat("Stale quotes (%d sec old) - market may be closed", tickAge));
+      lastSignalId = signalId;
+      return;
+   }
+   
+   double ask = tick.ask;
+   double bid = tick.bid;
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
    long stopLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
@@ -288,18 +307,21 @@ void ExecuteSignal(string signalJson)
    ulong ticket = 0;
    string errorMsg = "";
    
-   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, " bid=", bid, " ask=", ask);
+   Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, " bid=", bid, " ask=", ask, " tick_age=", tickAge, "s");
    
+   // Use price=0 to let MT5 use current market price (more robust than passing explicit price)
    if(action == "buy")
    {
       if(sl > 0 && sl > bid - minDist) sl = NormalizeDouble(bid - minDist - 10*point, digits);
       if(tp > 0 && tp < ask + minDist) tp = NormalizeDouble(ask + minDist + 10*point, digits);
       
-      success = trade.Buy(volume, symbol, ask, sl, tp, comment);
+      // First try with SL/TP, using price=0 for market order
+      success = trade.Buy(volume, symbol, 0, sl, tp, comment);
       if(success) { ticket = trade.ResultOrder(); }
-      else if(trade.ResultRetcode() == 10016)
+      else if(trade.ResultRetcode() == 10016 || trade.ResultRetcode() == 10021)
       {
-         success = trade.Buy(volume, symbol, ask, 0, 0, comment);
+         // Invalid stops or off quotes - try without SL/TP first, then modify
+         success = trade.Buy(volume, symbol, 0, 0, 0, comment);
          if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
          else { errorMsg = StringFormat("Buy failed: %d", trade.ResultRetcode()); }
       }
@@ -310,11 +332,13 @@ void ExecuteSignal(string signalJson)
       if(sl > 0 && sl < ask + minDist) sl = NormalizeDouble(ask + minDist + 10*point, digits);
       if(tp > 0 && tp > bid - minDist) tp = NormalizeDouble(bid - minDist - 10*point, digits);
       
-      success = trade.Sell(volume, symbol, bid, sl, tp, comment);
+      // First try with SL/TP, using price=0 for market order
+      success = trade.Sell(volume, symbol, 0, sl, tp, comment);
       if(success) { ticket = trade.ResultOrder(); }
-      else if(trade.ResultRetcode() == 10016)
+      else if(trade.ResultRetcode() == 10016 || trade.ResultRetcode() == 10021)
       {
-         success = trade.Sell(volume, symbol, bid, 0, 0, comment);
+         // Invalid stops or off quotes - try without SL/TP first, then modify
+         success = trade.Sell(volume, symbol, 0, 0, 0, comment);
          if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
          else { errorMsg = StringFormat("Sell failed: %d", trade.ResultRetcode()); }
       }
