@@ -625,11 +625,25 @@ def run_mt5_bridge(args):
                         
                         # Convert bars to DataFrame for analysis
                         df = pd.DataFrame(bars)
-                        df.columns = ['t', 'o', 'h', 'l', 'c', 'v'] if len(df.columns) == 6 else df.columns
+                        # Bars from API are dicts with keys: t, o, h, l, c, v
+                        # Rename to full names for indicator calculations
                         df = df.rename(columns={'t': 'timestamp', 'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+                        
+                        # Ensure we only have the expected columns (drop timestamp from price data)
+                        price_columns = ['open', 'high', 'low', 'close', 'volume']
+                        for col in price_columns:
+                            if col not in df.columns:
+                                logger.warning(f"Missing column {col} in market data for {symbol}")
+                                continue
+                        
                         df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
                         df = df.set_index('datetime')
                         df = df.sort_index()
+                        
+                        # Ensure price columns are numeric (not timestamps)
+                        for col in ['open', 'high', 'low', 'close']:
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
                         
                         # Get current spread for cost-aware trading
                         current_spread = quote.get('spread', 0.0) if quote else 0.0

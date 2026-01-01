@@ -140,6 +140,41 @@ class MT5BrokerAdapter:
             action = "buy" if direction_name == "LONG" else "sell"
             signal_id = str(uuid.uuid4())
             
+            # Get current price for sanity checking SL/TP
+            quote, _ = self.get_market_data(symbol)
+            current_price = quote.get('bid', 0) if quote else 0
+            
+            # SANITY CHECK: Validate SL/TP are reasonable price levels
+            # SL/TP should be within 10% of current price for Forex
+            if current_price > 0:
+                max_distance = current_price * 0.10  # 10% max distance
+                
+                # Check if SL is valid
+                if sl > 0 and abs(sl - current_price) > max_distance:
+                    logger.error(f"Invalid SL: {sl} is too far from current price {current_price}")
+                    # Calculate a reasonable SL based on direction
+                    is_jpy = 'JPY' in symbol
+                    default_sl_pips = 50
+                    pip_size = 0.01 if is_jpy else 0.0001
+                    if action == "buy":
+                        sl = current_price - (default_sl_pips * pip_size)
+                    else:
+                        sl = current_price + (default_sl_pips * pip_size)
+                    logger.info(f"Using corrected SL: {sl}")
+                
+                # Check if TP is valid
+                if tp > 0 and abs(tp - current_price) > max_distance:
+                    logger.error(f"Invalid TP: {tp} is too far from current price {current_price}")
+                    # Calculate a reasonable TP based on direction
+                    is_jpy = 'JPY' in symbol
+                    default_tp_pips = 100
+                    pip_size = 0.01 if is_jpy else 0.0001
+                    if action == "buy":
+                        tp = current_price + (default_tp_pips * pip_size)
+                    else:
+                        tp = current_price - (default_tp_pips * pip_size)
+                    logger.info(f"Using corrected TP: {tp}")
+            
             payload = {
                 'id': signal_id,
                 'symbol': symbol,
