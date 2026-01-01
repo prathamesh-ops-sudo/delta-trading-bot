@@ -593,6 +593,43 @@ def run_mt5_bridge(args):
         event_system = None
         logger.warning(f"Event logging system not available: {e}")
     
+    # Tier 2: Portfolio Risk Management
+    try:
+        from portfolio_risk import (
+            get_portfolio_risk_manager,
+            check_trade_risk,
+            get_portfolio_risk_state,
+            is_kill_switch_active,
+            deactivate_kill_switch,
+            PortfolioRiskManager,
+            RiskLevel
+        )
+        portfolio_risk_manager = get_portfolio_risk_manager()
+        PORTFOLIO_RISK_AVAILABLE = True
+        logger.info(f"Portfolio risk manager started - Kill switch, exposure limits, stress testing enabled")
+    except ImportError as e:
+        PORTFOLIO_RISK_AVAILABLE = False
+        portfolio_risk_manager = None
+        logger.warning(f"Portfolio risk manager not available: {e}")
+    
+    # Tier 3: Research/Production Separation
+    try:
+        from research_production import (
+            get_research_production_manager,
+            is_shadow_mode,
+            enable_shadow_mode,
+            disable_shadow_mode,
+            update_shadow_prices,
+            ResearchProductionManager
+        )
+        research_production_manager = get_research_production_manager()
+        RESEARCH_PRODUCTION_AVAILABLE = True
+        logger.info(f"Research/production manager started - Shadow mode, experiments, datasets enabled")
+    except ImportError as e:
+        RESEARCH_PRODUCTION_AVAILABLE = False
+        research_production_manager = None
+        logger.warning(f"Research/production manager not available: {e}")
+    
     try:
         from phoenix_brain import phoenix_brain, TradingState
         PHOENIX_BRAIN_AVAILABLE = True
@@ -619,6 +656,8 @@ def run_mt5_bridge(args):
     logger.info(f"Adaptive Learning - Online/Offline: {ADAPTIVE_LEARNING_AVAILABLE}")
     logger.info(f"Trade Journaling - Uncertainty Governor: {TRADE_JOURNALING_AVAILABLE}")
     logger.info(f"Institutional Event System - TCA/Reconciliation: {EVENT_SYSTEM_AVAILABLE}")
+    logger.info(f"Portfolio Risk Manager - Kill Switch/Exposure/Stress: {PORTFOLIO_RISK_AVAILABLE}")
+    logger.info(f"Research/Production Manager - Shadow Mode/Experiments: {RESEARCH_PRODUCTION_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread
@@ -713,6 +752,16 @@ def run_mt5_bridge(args):
                         if iteration % 60 == 0:
                             logger.info(f"[REAL DATA] {symbol}: {len(df)} bars, spread={current_spread:.1f} pts, bid={quote.get('bid', 0):.5f}")
                         
+                        # Tier 3: Update shadow trade prices for P&L tracking
+                        if RESEARCH_PRODUCTION_AVAILABLE and research_production_manager:
+                            try:
+                                current_bid = quote.get('bid', 0) if quote else 0
+                                current_ask = quote.get('ask', 0) if quote else 0
+                                if current_bid > 0 and current_ask > 0:
+                                    update_shadow_prices(symbol, current_bid, current_ask)
+                            except Exception as e:
+                                logger.debug(f"Shadow price update error: {e}")
+                        
                         # Detect regime
                         regime = regime_manager.detect_regime(df)
                         
@@ -752,6 +801,34 @@ def run_mt5_bridge(args):
                                     position_size = thesis.position_size_lots
                                     
                                     direction = TradeDirection.LONG if signal.direction.name == 'LONG' else TradeDirection.SHORT
+                                    
+                                    # Tier 2: Check portfolio risk limits before order execution
+                                    if PORTFOLIO_RISK_AVAILABLE and portfolio_risk_manager:
+                                        try:
+                                            # Check if kill switch is active
+                                            if is_kill_switch_active():
+                                                kill_reason = portfolio_risk_manager.kill_switch.reason
+                                                logger.warning(f"[KILL SWITCH] Order blocked for {symbol}: {kill_reason.value if kill_reason else 'unknown'}")
+                                                continue
+                                            
+                                            # Check currency exposure and concentration limits
+                                            allowed, risk_reason = check_trade_risk(
+                                                symbol=symbol,
+                                                direction=signal.direction.name,
+                                                volume=position_size,
+                                                current_positions=[{'symbol': p.get('symbol', ''), 'volume': p.get('volume', 0), 'type': p.get('type', 0), 'price_open': p.get('price_open', 0), 'ticket': p.get('ticket', '')} for p in open_positions],
+                                                equity=account_equity
+                                            )
+                                            
+                                            if not allowed:
+                                                logger.warning(f"[PORTFOLIO RISK] Order blocked for {symbol}: {risk_reason}")
+                                                continue
+                                            
+                                            # Update portfolio risk state
+                                            portfolio_risk_manager.update_equity_tracking(account_equity)
+                                            
+                                        except Exception as e:
+                                            logger.warning(f"Portfolio risk check error: {e}")
                                     
                                     # Place real order via MT5 bridge
                                     ticket = broker.place_order(
@@ -932,6 +1009,57 @@ def run_mt5_bridge(args):
                             print(f"  Last Reconciliation: OK" if not recon_result or recon_result.get('is_synced', True) else f"  Last Reconciliation: MISMATCH")
                         except Exception as e:
                             print(f"  Event System Error: {e}")
+                    
+                    # Tier 2: Portfolio Risk Management status
+                    if PORTFOLIO_RISK_AVAILABLE and portfolio_risk_manager:
+                        print("-" * 60)
+                        print("TIER 2 - PORTFOLIO RISK MANAGEMENT:")
+                        try:
+                            risk_state = get_portfolio_risk_state()
+                            print(f"  Kill Switch: {'ACTIVE - ' + (risk_state.get('kill_switch_reason', 'unknown') if risk_state.get('kill_switch_active') else 'OFF')}")
+                            print(f"  Current Drawdown: {risk_state.get('current_drawdown', 0):.1%}")
+                            print(f"  Peak Equity: ${risk_state.get('peak_equity', 0):.2f}")
+                            
+                            # Currency exposure
+                            exposures = risk_state.get('currency_exposures', {})
+                            if exposures:
+                                top_exposures = sorted(exposures.items(), key=lambda x: abs(x[1]), reverse=True)[:3]
+                                exposure_str = ", ".join([f"{c}: {e:.1%}" for c, e in top_exposures])
+                                print(f"  Top Exposures: {exposure_str}")
+                            
+                            # Stress test results
+                            stress = risk_state.get('last_stress_test', {})
+                            if stress:
+                                print(f"  VaR (95%): ${stress.get('var_95', 0):.2f}")
+                                print(f"  Expected Shortfall: ${stress.get('expected_shortfall', 0):.2f}")
+                        except Exception as e:
+                            print(f"  Portfolio Risk Error: {e}")
+                    
+                    # Tier 3: Research/Production Separation status
+                    if RESEARCH_PRODUCTION_AVAILABLE and research_production_manager:
+                        print("-" * 60)
+                        print("TIER 3 - RESEARCH/PRODUCTION:")
+                        try:
+                            # Shadow mode status
+                            shadow_active = is_shadow_mode()
+                            print(f"  Shadow Mode: {'ACTIVE' if shadow_active else 'OFF'}")
+                            
+                            # Get shadow trade stats
+                            shadow_stats = research_production_manager.shadow_engine.get_shadow_performance()
+                            if shadow_stats.get('total_trades', 0) > 0:
+                                print(f"  Shadow Trades: {shadow_stats.get('total_trades', 0)}")
+                                print(f"  Shadow Win Rate: {shadow_stats.get('win_rate', 0):.1%}")
+                                print(f"  Shadow P&L: ${shadow_stats.get('total_pnl', 0):.2f}")
+                            
+                            # Get experiment stats
+                            experiments = research_production_manager.experiment_tracker.list_experiments(status='RUNNING')
+                            print(f"  Active Experiments: {len(experiments)}")
+                            
+                            # Get dataset stats
+                            datasets = research_production_manager.dataset_manager.list_snapshots(limit=1)
+                            print(f"  Immutable Datasets: {len(datasets)} recent")
+                        except Exception as e:
+                            print(f"  Research/Production Error: {e}")
                     
                     print("=" * 60 + "\n")
                     

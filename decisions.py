@@ -107,6 +107,39 @@ except ImportError:
     get_event_system = None
     log_decision_cycle = None
 
+# Tier 2: Portfolio Risk Management
+try:
+    from portfolio_risk import (
+        get_portfolio_risk_manager,
+        check_trade_risk,
+        get_portfolio_risk_state,
+        is_kill_switch_active,
+        PortfolioRiskManager,
+        RiskLevel
+    )
+    PORTFOLIO_RISK_AVAILABLE = True
+except ImportError:
+    PORTFOLIO_RISK_AVAILABLE = False
+    get_portfolio_risk_manager = None
+    check_trade_risk = None
+    is_kill_switch_active = None
+
+# Tier 3: Research/Production Separation
+try:
+    from research_production import (
+        get_research_production_manager,
+        is_shadow_mode,
+        process_shadow_signal,
+        update_shadow_prices,
+        ResearchProductionManager
+    )
+    RESEARCH_PRODUCTION_AVAILABLE = True
+except ImportError:
+    RESEARCH_PRODUCTION_AVAILABLE = False
+    get_research_production_manager = None
+    is_shadow_mode = None
+    process_shadow_signal = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -608,6 +641,12 @@ class VeteranTraderDecisionEngine:
         # Institutional event logging system for measurement & auditability (Tier 1)
         self.event_system = get_event_system() if EVENT_LOG_AVAILABLE else None
         
+        # Portfolio risk manager for currency exposure, concentration, kill switch (Tier 2)
+        self.portfolio_risk = get_portfolio_risk_manager() if PORTFOLIO_RISK_AVAILABLE else None
+        
+        # Research/production manager for shadow mode, experiments (Tier 3)
+        self.research_production = get_research_production_manager() if RESEARCH_PRODUCTION_AVAILABLE else None
+        
         # Decision thresholds - INCREASED for higher-quality trades
         # Most retail forex systems lose money by overtrading
         # Better to take fewer, higher-quality trades with clear edge
@@ -627,7 +666,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}, EventLog: {EVENT_LOG_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}, EventLog: {EVENT_LOG_AVAILABLE}, PortfolioRisk: {PORTFOLIO_RISK_AVAILABLE}, ResearchProduction: {RESEARCH_PRODUCTION_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -649,6 +688,21 @@ class VeteranTraderDecisionEngine:
                 cycle_id = self.event_system.event_logger.start_decision_cycle(symbol)
             except Exception as e:
                 logger.warning(f"Event logging error: {e}")
+        
+        # Tier 2: Check portfolio kill switch before any analysis
+        if self.portfolio_risk and PORTFOLIO_RISK_AVAILABLE:
+            try:
+                if is_kill_switch_active():
+                    reason = self.portfolio_risk.kill_switch.reason
+                    logger.warning(f"[KILL SWITCH] Trading halted for {symbol}: {reason.value if reason else 'unknown'}")
+                    if cycle_id and self.event_system:
+                        self.event_system.event_logger.log_trade_decision(
+                            cycle_id, "rejected", f"Kill switch active: {reason.value if reason else 'unknown'}"
+                        )
+                        self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
+                    return None
+            except Exception as e:
+                logger.warning(f"Portfolio risk check error: {e}")
         
         # Get primary timeframe data (H1 for analysis)
         primary_tf = 'H1'
@@ -1219,6 +1273,37 @@ class VeteranTraderDecisionEngine:
         trailing_distance = self.trailing_manager.calculate_trailing_distance(
             atr, adx_value, aggression
         ) if trailing_enabled else 0
+        
+        # 13.5 Tier 2: Check portfolio risk limits (currency exposure, concentration)
+        if self.portfolio_risk and PORTFOLIO_RISK_AVAILABLE:
+            try:
+                direction_str = "BUY" if direction == TradeDirection.LONG else "SELL"
+                # Note: current_positions would need to be passed in for full check
+                # For now, we just check if kill switch is active (already done above)
+                # Full position-level checks happen in main.py before order execution
+                logger.debug(f"[PORTFOLIO RISK] Trade {direction_str} {symbol} passed initial risk checks")
+            except Exception as e:
+                logger.warning(f"Portfolio risk check error: {e}")
+        
+        # 13.6 Tier 3: Process signal in shadow mode if enabled
+        if self.research_production and RESEARCH_PRODUCTION_AVAILABLE:
+            try:
+                if is_shadow_mode():
+                    direction_str = "BUY" if direction == TradeDirection.LONG else "SELL"
+                    shadow_trade = process_shadow_signal(
+                        symbol=symbol,
+                        direction=direction_str,
+                        entry_price=entry_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        position_size=position_size,
+                        strategy=strategy,
+                        confidence=confidence
+                    )
+                    if shadow_trade:
+                        logger.info(f"[SHADOW MODE] Recorded shadow trade: {shadow_trade.trade_id}")
+            except Exception as e:
+                logger.warning(f"Shadow mode processing error: {e}")
         
         # 14. Create final signal
         signal = TradingSignal(
