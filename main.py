@@ -551,6 +551,19 @@ def run_mt5_bridge(args):
         advanced_knowledge = None
         logger.warning(f"Advanced knowledge not available: {e}")
     
+    # Adaptive Learning - Online/Offline Learning System
+    try:
+        from adaptive_learning import get_adaptive_learning
+        adaptive_learning = get_adaptive_learning()
+        ADAPTIVE_LEARNING_AVAILABLE = True
+        # Start background learning updates (every 60 seconds)
+        adaptive_learning.start_background_updates(interval_seconds=60)
+        logger.info(f"Adaptive learning engine started - Mode: {adaptive_learning.get_learning_mode().value}, Market open: {adaptive_learning.is_market_open()}")
+    except ImportError as e:
+        ADAPTIVE_LEARNING_AVAILABLE = False
+        adaptive_learning = None
+        logger.warning(f"Adaptive learning not available: {e}")
+    
     try:
         from phoenix_brain import phoenix_brain, TradingState
         PHOENIX_BRAIN_AVAILABLE = True
@@ -574,6 +587,7 @@ def run_mt5_bridge(args):
     logger.info(f"MT5 Bridge mode - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
     logger.info(f"Phoenix components - Knowledge: {KNOWLEDGE_ENGINE_AVAILABLE}, Brain: {PHOENIX_BRAIN_AVAILABLE}, Memory: {VECTOR_MEMORY_AVAILABLE}")
     logger.info(f"Advanced Knowledge - Calendar/Sentiment/CrossAsset: {ADVANCED_KNOWLEDGE_AVAILABLE}")
+    logger.info(f"Adaptive Learning - Online/Offline: {ADAPTIVE_LEARNING_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread

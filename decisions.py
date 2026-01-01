@@ -58,6 +58,19 @@ except ImportError:
     get_trading_context = None
     advanced_should_avoid = None
 
+try:
+    from adaptive_learning import (
+        get_adaptive_learning,
+        record_trade_outcome,
+        AdaptiveLearningEngine,
+        TradeOutcome
+    )
+    ADAPTIVE_LEARNING_AVAILABLE = True
+except ImportError:
+    ADAPTIVE_LEARNING_AVAILABLE = False
+    get_adaptive_learning = None
+    record_trade_outcome = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -550,6 +563,9 @@ class VeteranTraderDecisionEngine:
         self._last_advanced_update = None
         self._cached_trading_context = {}
         
+        # Adaptive learning engine for online/offline learning
+        self.adaptive_learning = get_adaptive_learning() if ADAPTIVE_LEARNING_AVAILABLE else None
+        
         # Decision thresholds - INCREASED for higher-quality trades
         # Most retail forex systems lose money by overtrading
         # Better to take fewer, higher-quality trades with clear edge
@@ -569,7 +585,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -820,6 +836,29 @@ class VeteranTraderDecisionEngine:
         
         # Apply advanced knowledge adjustment (economic calendar, topic sentiment, cross-asset regime)
         confidence *= advanced_confidence_adjustment
+        
+        # Apply adaptive learning adjustment (online/offline learning)
+        adaptive_confidence_adjustment = 1.0
+        if self.adaptive_learning:
+            try:
+                # Get adjusted confidence based on learned parameters
+                adjusted_conf = self.adaptive_learning.get_adjusted_confidence(
+                    confidence, symbol, strategy
+                )
+                # Calculate the adjustment factor
+                if confidence > 0:
+                    adaptive_confidence_adjustment = adjusted_conf / confidence
+                confidence = adjusted_conf
+                
+                # Check session quality - reduce confidence during low-quality sessions
+                session_quality = self.adaptive_learning.get_session_quality()
+                if session_quality < 0.7:
+                    confidence *= session_quality
+                    logger.debug(f"Session quality adjustment: {session_quality:.2f}")
+                
+                logger.debug(f"Adaptive learning adjustment for {symbol}: {adaptive_confidence_adjustment:.2f}")
+            except Exception as e:
+                logger.warning(f"Adaptive learning error: {e}")
         
         confidence = min(confidence, 0.95)  # Cap at 95%
         
