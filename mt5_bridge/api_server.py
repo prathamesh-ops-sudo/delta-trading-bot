@@ -33,10 +33,11 @@ except ImportError:
     TRADE_GATING_AVAILABLE = False
 
 try:
-    from monitoring import monitoring, AlertLevel, AlertChannel
+    from monitoring import monitoring, AlertLevel, AlertChannel, realtime_alerts
     MONITORING_AVAILABLE = True
 except ImportError:
     MONITORING_AVAILABLE = False
+    realtime_alerts = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -315,6 +316,8 @@ def register():
     data = request.get_json()
     logger.info(f"EA registered: Login={data.get('login')}, Server={data.get('server')}")
     bridge_state.update_account(data)
+    if realtime_alerts:
+        realtime_alerts.record_ea_poll()
     return jsonify({'status': 'ok', 'message': 'Registered successfully'})
 
 
@@ -339,6 +342,8 @@ def get_account():
 @app.route('/api/signals', methods=['GET'])
 def get_signals():
     """EA polls this endpoint for pending trade signals"""
+    if realtime_alerts:
+        realtime_alerts.record_ea_poll()
     signals = bridge_state.get_pending_signals()
     # Use json.dumps with sort_keys=False to preserve key order for EA parsing
     # EA expects {"id":... to be first in each signal object
@@ -372,12 +377,19 @@ def signal_result():
     """EA reports signal execution result"""
     data = request.get_json()
     
+    success = data.get('success', False)
     bridge_state.mark_signal_executed(
         signal_id=data['signal_id'],
-        success=data.get('success', False),
+        success=success,
         ticket=data.get('ticket', 0),
         error=data.get('error', '')
     )
+    
+    if realtime_alerts:
+        if success:
+            realtime_alerts.record_trade_success()
+        else:
+            realtime_alerts.record_trade_failure()
     
     return jsonify({'status': 'ok'})
 
@@ -464,17 +476,30 @@ def receive_market_data():
     # Track which symbols need full history resync
     symbols_needing_resync = []
     
+    # Record bars update for real-time alerts
+    if realtime_alerts and symbols_data:
+        realtime_alerts.record_bars_update()
+    
     for sym_data in symbols_data:
         symbol = sym_data.get('symbol', '')
         if not symbol:
             continue
         
+        spread_points = sym_data.get('spread', 0.0)
+        point = sym_data.get('point', 0.00001)
+        spread_pips = spread_points * point * 10000 if 'JPY' not in symbol else spread_points * point * 100
+        
+        # Check spread for alerts
+        if realtime_alerts:
+            realtime_alerts.check_spread(symbol, spread_pips)
+        
         quote_data = {
             'bid': sym_data.get('bid', 0.0),
             'ask': sym_data.get('ask', 0.0),
             'spread': sym_data.get('spread', 0.0),
+            'spread_pips': spread_pips,
             'digits': sym_data.get('digits', 5),
-            'point': sym_data.get('point', 0.00001),
+            'point': point,
             'stop_level': sym_data.get('stop_level', 0),
             'freeze_level': sym_data.get('freeze_level', 0),
             'tick_value': sym_data.get('tick_value', 1.0),
@@ -661,7 +686,49 @@ def wait_for_signal_result(signal_id: str, timeout: int = 30) -> Optional[Dict]:
     return None
 
 
+def create_app():
+    """Factory function for Gunicorn"""
+    return app
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('MT5_BRIDGE_PORT', 5000))
-    logger.info(f"Starting MT5 Bridge API Server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    use_gunicorn = os.environ.get('USE_GUNICORN', 'false').lower() == 'true'
+    
+    if use_gunicorn:
+        logger.info(f"Starting MT5 Bridge API Server with Gunicorn on port {port}")
+        try:
+            import gunicorn.app.base
+            
+            class StandaloneApplication(gunicorn.app.base.BaseApplication):
+                def __init__(self, app, options=None):
+                    self.options = options or {}
+                    self.application = app
+                    super().__init__()
+                
+                def load_config(self):
+                    for key, value in self.options.items():
+                        if key in self.cfg.settings and value is not None:
+                            self.cfg.set(key.lower(), value)
+                
+                def load(self):
+                    return self.application
+            
+            options = {
+                'bind': f'0.0.0.0:{port}',
+                'workers': 2,
+                'threads': 4,
+                'worker_class': 'gthread',
+                'timeout': 120,
+                'keepalive': 5,
+                'accesslog': '-',
+                'errorlog': '-',
+                'loglevel': 'info',
+            }
+            StandaloneApplication(app, options).run()
+        except ImportError:
+            logger.warning("Gunicorn not available, falling back to Flask dev server")
+            app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    else:
+        logger.info(f"Starting MT5 Bridge API Server (Flask dev) on port {port}")
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)

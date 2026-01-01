@@ -858,8 +858,230 @@ class MonitoringSystem:
         }
 
 
-# Singleton instance
+class RealTimeAlerts:
+    """Real-time alerts for critical trading system events"""
+    
+    def __init__(self, alert_manager: AlertManager = None):
+        self.alert_manager = alert_manager or AlertManager()
+        self.last_ea_poll = datetime.now()
+        self.last_bars_update = datetime.now()
+        self.consecutive_failures = 0
+        self.spread_alerts_sent = {}
+        
+        # Thresholds
+        self.ea_disconnect_threshold_sec = 120  # 2 minutes
+        self.bars_stale_threshold_sec = 300  # 5 minutes
+        self.drawdown_alert_threshold = 10.0  # 10%
+        self.max_consecutive_failures = 3
+        self.spread_thresholds = {
+            'EURUSD': 3.0, 'GBPUSD': 4.0, 'USDJPY': 3.0, 'USDCHF': 3.5,
+            'AUDUSD': 3.5, 'USDCAD': 3.5, 'NZDUSD': 4.0, 'EURGBP': 3.5
+        }
+        
+        logger.info("RealTimeAlerts initialized")
+    
+    def record_ea_poll(self):
+        """Record that EA has polled the API"""
+        self.last_ea_poll = datetime.now()
+    
+    def record_bars_update(self):
+        """Record that bars have been updated"""
+        self.last_bars_update = datetime.now()
+    
+    def record_trade_failure(self):
+        """Record a trade execution failure"""
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self._send_alert(
+                AlertLevel.ERROR,
+                'trade_failures',
+                f'Repeated trade failures: {self.consecutive_failures} consecutive failures',
+                {'consecutive_failures': self.consecutive_failures}
+            )
+    
+    def record_trade_success(self):
+        """Record a successful trade execution"""
+        self.consecutive_failures = 0
+    
+    def check_ea_connection(self) -> bool:
+        """Check if EA is still connected (polling)"""
+        elapsed = (datetime.now() - self.last_ea_poll).total_seconds()
+        if elapsed > self.ea_disconnect_threshold_sec:
+            self._send_alert(
+                AlertLevel.CRITICAL,
+                'ea_disconnect',
+                f'EA disconnected: No polls for {elapsed:.0f} seconds',
+                {'last_poll': self.last_ea_poll.isoformat(), 'elapsed_sec': elapsed}
+            )
+            self._put_cloudwatch_alarm('EADisconnected', 1)
+            return False
+        return True
+    
+    def check_bars_freshness(self) -> bool:
+        """Check if bars data is fresh"""
+        elapsed = (datetime.now() - self.last_bars_update).total_seconds()
+        if elapsed > self.bars_stale_threshold_sec:
+            self._send_alert(
+                AlertLevel.WARNING,
+                'stale_bars',
+                f'Bars data stale: No updates for {elapsed:.0f} seconds',
+                {'last_update': self.last_bars_update.isoformat(), 'elapsed_sec': elapsed}
+            )
+            self._put_cloudwatch_alarm('StaleBars', 1)
+            return False
+        return True
+    
+    def check_spread(self, symbol: str, spread_pips: float) -> bool:
+        """Check if spread is within acceptable range"""
+        threshold = self.spread_thresholds.get(symbol, 5.0)
+        if spread_pips > threshold:
+            now = datetime.now()
+            last_alert = self.spread_alerts_sent.get(symbol)
+            if not last_alert or (now - last_alert).total_seconds() > 300:
+                self._send_alert(
+                    AlertLevel.WARNING,
+                    'spread_spike',
+                    f'{symbol} spread spike: {spread_pips:.1f} pips (threshold: {threshold:.1f})',
+                    {'symbol': symbol, 'spread': spread_pips, 'threshold': threshold}
+                )
+                self._put_cloudwatch_alarm(f'SpreadSpike_{symbol}', spread_pips)
+                self.spread_alerts_sent[symbol] = now
+            return False
+        return True
+    
+    def check_drawdown(self, current_balance: float, peak_balance: float) -> bool:
+        """Check if drawdown exceeds threshold"""
+        if peak_balance <= 0:
+            return True
+        drawdown_pct = ((peak_balance - current_balance) / peak_balance) * 100
+        if drawdown_pct > self.drawdown_alert_threshold:
+            self._send_alert(
+                AlertLevel.ERROR,
+                'drawdown',
+                f'Drawdown alert: {drawdown_pct:.1f}% (threshold: {self.drawdown_alert_threshold}%)',
+                {'drawdown_pct': drawdown_pct, 'current_balance': current_balance, 'peak_balance': peak_balance}
+            )
+            self._put_cloudwatch_alarm('DrawdownExceeded', drawdown_pct)
+            return False
+        return True
+    
+    def run_all_checks(self, current_balance: float = 0, peak_balance: float = 0) -> Dict[str, bool]:
+        """Run all real-time checks"""
+        return {
+            'ea_connected': self.check_ea_connection(),
+            'bars_fresh': self.check_bars_freshness(),
+            'drawdown_ok': self.check_drawdown(current_balance, peak_balance) if peak_balance > 0 else True
+        }
+    
+    def _send_alert(self, level: AlertLevel, category: str, message: str, details: Dict = None):
+        """Send alert through alert manager"""
+        self.alert_manager.create_alert(
+            level=level,
+            category=category,
+            message=message,
+            details=details,
+            channels=[AlertChannel.LOG, AlertChannel.CLOUDWATCH]
+        )
+    
+    def _put_cloudwatch_alarm(self, alarm_name: str, value: float):
+        """Put metric to CloudWatch for alarm triggering"""
+        if not BOTO3_AVAILABLE:
+            return
+        try:
+            cloudwatch = boto3.client('cloudwatch', region_name='us-east-1')
+            cloudwatch.put_metric_data(
+                Namespace='ForexTradingSystem',
+                MetricData=[{
+                    'MetricName': alarm_name,
+                    'Value': value,
+                    'Unit': 'None',
+                    'Timestamp': datetime.now()
+                }]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to put CloudWatch metric {alarm_name}: {e}")
+    
+    def setup_cloudwatch_alarms(self):
+        """Create CloudWatch alarms for critical metrics"""
+        if not BOTO3_AVAILABLE:
+            logger.warning("boto3 not available - cannot create CloudWatch alarms")
+            return
+        
+        try:
+            cloudwatch = boto3.client('cloudwatch', region_name='us-east-1')
+            sns = boto3.client('sns', region_name='us-east-1')
+            
+            topic_arn = None
+            try:
+                response = sns.create_topic(Name='ForexTradingAlerts')
+                topic_arn = response['TopicArn']
+                logger.info(f"SNS topic created/found: {topic_arn}")
+            except Exception as e:
+                logger.warning(f"Could not create SNS topic: {e}")
+            
+            alarms = [
+                {
+                    'AlarmName': 'ForexTrading-EADisconnected',
+                    'MetricName': 'EADisconnected',
+                    'Threshold': 0.5,
+                    'ComparisonOperator': 'GreaterThanThreshold',
+                    'EvaluationPeriods': 1,
+                    'Period': 120,
+                    'Statistic': 'Maximum',
+                    'AlarmDescription': 'EA has not polled for 2+ minutes'
+                },
+                {
+                    'AlarmName': 'ForexTrading-StaleBars',
+                    'MetricName': 'StaleBars',
+                    'Threshold': 0.5,
+                    'ComparisonOperator': 'GreaterThanThreshold',
+                    'EvaluationPeriods': 1,
+                    'Period': 300,
+                    'Statistic': 'Maximum',
+                    'AlarmDescription': 'Bar data has not updated for 5+ minutes'
+                },
+                {
+                    'AlarmName': 'ForexTrading-DrawdownExceeded',
+                    'MetricName': 'DrawdownExceeded',
+                    'Threshold': 10.0,
+                    'ComparisonOperator': 'GreaterThanThreshold',
+                    'EvaluationPeriods': 1,
+                    'Period': 60,
+                    'Statistic': 'Maximum',
+                    'AlarmDescription': 'Drawdown exceeds 10%'
+                }
+            ]
+            
+            for alarm in alarms:
+                alarm_config = {
+                    'AlarmName': alarm['AlarmName'],
+                    'MetricName': alarm['MetricName'],
+                    'Namespace': 'ForexTradingSystem',
+                    'Threshold': alarm['Threshold'],
+                    'ComparisonOperator': alarm['ComparisonOperator'],
+                    'EvaluationPeriods': alarm['EvaluationPeriods'],
+                    'Period': alarm['Period'],
+                    'Statistic': alarm['Statistic'],
+                    'AlarmDescription': alarm['AlarmDescription'],
+                    'TreatMissingData': 'notBreaching'
+                }
+                
+                if topic_arn:
+                    alarm_config['AlarmActions'] = [topic_arn]
+                    alarm_config['OKActions'] = [topic_arn]
+                
+                cloudwatch.put_metric_alarm(**alarm_config)
+                logger.info(f"CloudWatch alarm created: {alarm['AlarmName']}")
+            
+            logger.info("All CloudWatch alarms configured successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup CloudWatch alarms: {e}")
+
+
+# Singleton instances
 monitoring = MonitoringSystem()
+realtime_alerts = RealTimeAlerts(monitoring.alert_manager)
 
 
 if __name__ == "__main__":
