@@ -2,9 +2,11 @@
 MT5 Bridge API Server
 Receives trade signals from the AI trading system and serves them to the MT5 EA
 Also receives account info and position updates from MT5
+Includes SQLite persistence and trade gating integration
 """
 
 import os
+import sys
 import json
 import uuid
 import logging
@@ -14,6 +16,27 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 from threading import Lock
 from flask import Flask, request, Response, jsonify
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from persistence import get_persistence, PersistenceManager
+    PERSISTENCE_AVAILABLE = True
+except ImportError:
+    PERSISTENCE_AVAILABLE = False
+
+try:
+    from trade_gating import get_trade_gating, TradeGatingSystem
+    TRADE_GATING_AVAILABLE = True
+except ImportError:
+    TRADE_GATING_AVAILABLE = False
+
+try:
+    from monitoring import monitoring, AlertLevel, AlertChannel
+    MONITORING_AVAILABLE = True
+except ImportError:
+    MONITORING_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,13 +59,29 @@ class TradeSignal:
 
 
 class MarketDataBuffer:
-    """Ring buffer for storing live market data from MT5"""
+    """Ring buffer for storing live market data from MT5 with SQLite persistence"""
     
     def __init__(self, max_bars: int = 500):
         self.max_bars = max_bars
         self.data: Dict[str, Dict] = {}  # symbol -> {quote, bars}
         self.lock = Lock()
         self.last_update: Optional[datetime] = None
+        self._load_persisted_bars()
+    
+    def _load_persisted_bars(self):
+        """Load bars from SQLite on startup"""
+        if not PERSISTENCE_AVAILABLE:
+            return
+        try:
+            persistence = get_persistence()
+            symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD', 'NZDUSD', 'EURGBP']
+            for symbol in symbols:
+                bars = persistence.load_bars(symbol, self.max_bars)
+                if bars:
+                    self.data[symbol] = {'quote': {}, 'bars': bars}
+                    logger.info(f"Loaded {len(bars)} persisted bars for {symbol}")
+        except Exception as e:
+            logger.warning(f"Failed to load persisted bars: {e}")
     
     def update(self, symbol: str, quote_data: Dict, bars: List[Dict]):
         with self.lock:
@@ -61,6 +100,14 @@ class MarketDataBuffer:
                 # Sort by timestamp and keep most recent
                 sorted_bars = sorted(bar_dict.values(), key=lambda x: x['t'])
                 self.data[symbol]['bars'] = sorted_bars[-self.max_bars:]
+                
+                # Persist bars to SQLite
+                if PERSISTENCE_AVAILABLE:
+                    try:
+                        persistence = get_persistence()
+                        persistence.save_bars(symbol, bars)
+                    except Exception as e:
+                        logger.warning(f"Failed to persist bars for {symbol}: {e}")
             
             self.last_update = datetime.now()
     
@@ -93,7 +140,7 @@ class MarketDataBuffer:
 
 
 class ClosedTradesStore:
-    """Store for closed trades used for learning feedback loop"""
+    """Store for closed trades used for learning feedback loop with SQLite persistence"""
     
     def __init__(self, max_trades: int = 1000):
         self.max_trades = max_trades
@@ -103,12 +150,33 @@ class ClosedTradesStore:
         self.total_profit: float = 0.0
         self.win_count: int = 0
         self.loss_count: int = 0
+        self._load_persisted_trades()
+    
+    def _load_persisted_trades(self):
+        """Load trades from SQLite on startup"""
+        if not PERSISTENCE_AVAILABLE:
+            return
+        try:
+            persistence = get_persistence()
+            trades = persistence.load_trades(self.max_trades)
+            for trade in trades:
+                self.trades.append(trade)
+                profit = trade.get('profit', 0.0)
+                self.total_profit += profit
+                if profit > 0:
+                    self.win_count += 1
+                elif profit < 0:
+                    self.loss_count += 1
+            if trades:
+                logger.info(f"Loaded {len(trades)} persisted trades, P&L=${self.total_profit:.2f}")
+        except Exception as e:
+            logger.warning(f"Failed to load persisted trades: {e}")
     
     def add_trades(self, trades: List[Dict]):
         with self.lock:
             for trade in trades:
                 # Avoid duplicates by ticket
-                if not any(t['ticket'] == trade['ticket'] for t in self.trades):
+                if not any(t.get('ticket') == trade.get('ticket') for t in self.trades):
                     self.trades.append(trade)
                     profit = trade.get('profit', 0.0)
                     self.total_profit += profit
@@ -116,6 +184,14 @@ class ClosedTradesStore:
                         self.win_count += 1
                     elif profit < 0:
                         self.loss_count += 1
+                    
+                    # Persist trade to SQLite
+                    if PERSISTENCE_AVAILABLE:
+                        try:
+                            persistence = get_persistence()
+                            persistence.save_trade(trade)
+                        except Exception as e:
+                            logger.warning(f"Failed to persist trade: {e}")
             
             # Keep only most recent trades
             if len(self.trades) > self.max_trades:

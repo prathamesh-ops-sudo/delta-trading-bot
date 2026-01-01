@@ -38,6 +38,16 @@ class AlertChannel(Enum):
     SMS = "sms"
     WEBHOOK = "webhook"
     TELEGRAM = "telegram"
+    CLOUDWATCH = "cloudwatch"
+
+
+# Try to import boto3 for CloudWatch
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
 
 
 @dataclass
@@ -225,6 +235,8 @@ class AlertManager:
                 self._send_to_webhook(alert)
             elif channel == AlertChannel.TELEGRAM:
                 self._send_to_telegram(alert)
+            elif channel == AlertChannel.CLOUDWATCH:
+                self._send_to_cloudwatch(alert)
         except Exception as e:
             logger.error(f"Failed to send alert to {channel.value}: {e}")
     
@@ -341,6 +353,74 @@ Category: {alert.category}
             
         except Exception as e:
             logger.error(f"Failed to send Telegram alert: {e}")
+    
+    def _send_to_cloudwatch(self, alert: Alert):
+        """Send alert to AWS CloudWatch as custom metric and log"""
+        if not BOTO3_AVAILABLE:
+            logger.warning("boto3 not available - CloudWatch alerts disabled")
+            return
+        
+        config = self.channels.get(AlertChannel.CLOUDWATCH, {})
+        namespace = config.get('namespace', 'ForexTradingSystem')
+        region = config.get('region', os.environ.get('AWS_REGION', 'us-east-1'))
+        
+        try:
+            cloudwatch = boto3.client('cloudwatch', region_name=region)
+            
+            # Put custom metric for the alert
+            severity_value = {'info': 1, 'warning': 2, 'error': 3, 'critical': 4}.get(alert.level.value, 1)
+            
+            cloudwatch.put_metric_data(
+                Namespace=namespace,
+                MetricData=[
+                    {
+                        'MetricName': f'Alert_{alert.category}',
+                        'Value': severity_value,
+                        'Unit': 'None',
+                        'Timestamp': alert.timestamp,
+                        'Dimensions': [
+                            {'Name': 'Severity', 'Value': alert.level.value},
+                            {'Name': 'Category', 'Value': alert.category}
+                        ]
+                    }
+                ]
+            )
+            
+            logger.debug(f"CloudWatch metric sent for alert: {alert.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send CloudWatch alert: {e}")
+    
+    def put_cloudwatch_metric(self, metric_name: str, value: float, unit: str = "None",
+                               dimensions: List[Dict] = None):
+        """Put a custom metric to CloudWatch"""
+        if not BOTO3_AVAILABLE:
+            return
+        
+        config = self.channels.get(AlertChannel.CLOUDWATCH, {})
+        namespace = config.get('namespace', 'ForexTradingSystem')
+        region = config.get('region', os.environ.get('AWS_REGION', 'us-east-1'))
+        
+        try:
+            cloudwatch = boto3.client('cloudwatch', region_name=region)
+            
+            metric_data = {
+                'MetricName': metric_name,
+                'Value': value,
+                'Unit': unit,
+                'Timestamp': datetime.now()
+            }
+            
+            if dimensions:
+                metric_data['Dimensions'] = dimensions
+            
+            cloudwatch.put_metric_data(
+                Namespace=namespace,
+                MetricData=[metric_data]
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to put CloudWatch metric {metric_name}: {e}")
     
     def get_recent_alerts(self, hours: int = 24, level: AlertLevel = None) -> List[Alert]:
         """Get recent alerts"""

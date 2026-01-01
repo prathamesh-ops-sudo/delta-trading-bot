@@ -19,6 +19,11 @@ input bool     ENABLE_TRADING = true;
 input int      BARS_TO_SEND = 200;
 input string   SYMBOLS_TO_TRACK = "EURUSD,GBPUSD,USDJPY,USDCHF,AUDUSD,USDCAD,NZDUSD,EURGBP";
 
+// Execution Improvement Inputs
+input int      MAX_RETRIES = 3;                 // Max retry attempts for failed trades
+input int      RETRY_DELAY_MS = 500;            // Initial delay between retries (ms)
+input bool     AUTO_DETECT_FILLING = true;      // Auto-detect filling mode per symbol
+
 // Trade Management Inputs
 input bool     ENABLE_BREAKEVEN = true;        // Enable break-even logic
 input double   BE_TRIGGER_PIPS = 15;           // Pips profit to trigger break-even
@@ -48,6 +53,10 @@ struct PositionState {
 PositionState positionStates[];
 int positionStateCount = 0;
 
+// Failure tracking for backoff
+int consecutiveFailures = 0;
+datetime lastFailureTime = 0;
+
 int OnInit()
 {
    trade.SetExpertMagicNumber(MAGIC_NUMBER);
@@ -71,9 +80,42 @@ int OnInit()
    
    Print("TradingBridgeEA v3.0 initialized - Tracking ", ArraySize(symbolsArray), " symbols");
    Print("Trade Management: BE=", ENABLE_BREAKEVEN, " Trail=", ENABLE_TRAILING, " Partial=", ENABLE_PARTIAL_CLOSE);
+   Print("Execution: MaxRetries=", MAX_RETRIES, " RetryDelay=", RETRY_DELAY_MS, "ms AutoFilling=", AUTO_DETECT_FILLING);
    RegisterWithAPI();
    EventSetTimer(POLL_INTERVAL);
    return(INIT_SUCCEEDED);
+}
+
+ENUM_ORDER_TYPE_FILLING GetCompatibleFillingMode(string symbol)
+{
+   // Get allowed filling modes for this symbol
+   long fillingMode = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   
+   // Check each filling mode in order of preference
+   if((fillingMode & SYMBOL_FILLING_FOK) != 0)
+      return ORDER_FILLING_FOK;
+   if((fillingMode & SYMBOL_FILLING_IOC) != 0)
+      return ORDER_FILLING_IOC;
+   
+   // Default to RETURN (partial fill allowed)
+   return ORDER_FILLING_RETURN;
+}
+
+bool RefreshTickAndRetry(string symbol)
+{
+   // Force tick refresh by requesting symbol info
+   MqlTick tick;
+   for(int i = 0; i < 3; i++)
+   {
+      if(SymbolInfoTick(symbol, tick))
+      {
+         datetime tickAge = TimeCurrent() - tick.time;
+         if(tickAge <= 60)
+            return true;
+      }
+      Sleep(100);
+   }
+   return false;
 }
 
 void OnDeinit(const int reason) { EventKillTimer(); }
@@ -298,23 +340,59 @@ void ExecuteSignal(string signalJson)
    if(!ENABLE_TRADING) { SendSignalResult(signalId, false, 0, "Trading disabled"); lastSignalId = signalId; return; }
    if(!SymbolSelect(symbol, true)) { SendSignalResult(signalId, false, 0, "Symbol not found"); lastSignalId = signalId; return; }
    
-   // Check for fresh quotes before trading
+   // Check for backoff due to repeated failures
+   if(consecutiveFailures >= 3)
+   {
+      int backoffSeconds = (int)MathPow(2, MathMin(consecutiveFailures - 2, 5)) * 30;  // 30s, 60s, 120s, 240s, 480s, 960s max
+      datetime timeSinceFailure = TimeCurrent() - lastFailureTime;
+      if(timeSinceFailure < backoffSeconds)
+      {
+         Print("Backoff active: ", backoffSeconds - timeSinceFailure, "s remaining after ", consecutiveFailures, " failures");
+         SendSignalResult(signalId, false, 0, StringFormat("Backoff: %d failures, wait %ds", consecutiveFailures, backoffSeconds - timeSinceFailure));
+         lastSignalId = signalId;
+         return;
+      }
+   }
+   
+   // Auto-detect and set compatible filling mode
+   if(AUTO_DETECT_FILLING)
+   {
+      ENUM_ORDER_TYPE_FILLING filling = GetCompatibleFillingMode(symbol);
+      trade.SetTypeFilling(filling);
+   }
+   
+   // Check for fresh quotes before trading - with refresh retry
    MqlTick tick;
    if(!SymbolInfoTick(symbol, tick))
    {
-      SendSignalResult(signalId, false, 0, "Cannot get tick data");
-      lastSignalId = signalId;
-      return;
+      // Try to refresh tick
+      if(!RefreshTickAndRetry(symbol))
+      {
+         SendSignalResult(signalId, false, 0, "Cannot get tick data after retry");
+         lastSignalId = signalId;
+         return;
+      }
+      SymbolInfoTick(symbol, tick);
    }
    
    // Check if quotes are stale (more than 60 seconds old = likely market closed/holiday)
    datetime tickAge = TimeCurrent() - tick.time;
    if(tickAge > 60)
    {
-      Print("Stale quotes detected for ", symbol, " - tick age: ", tickAge, " seconds. Market may be closed.");
-      SendSignalResult(signalId, false, 0, StringFormat("Stale quotes (%d sec old) - market may be closed", tickAge));
-      lastSignalId = signalId;
-      return;
+      // Try refresh once
+      if(RefreshTickAndRetry(symbol))
+      {
+         SymbolInfoTick(symbol, tick);
+         tickAge = TimeCurrent() - tick.time;
+      }
+      
+      if(tickAge > 60)
+      {
+         Print("Stale quotes detected for ", symbol, " - tick age: ", tickAge, " seconds. Market may be closed.");
+         SendSignalResult(signalId, false, 0, StringFormat("Stale quotes (%d sec old) - market may be closed", tickAge));
+         lastSignalId = signalId;
+         return;
+      }
    }
    
    double ask = tick.ask;
@@ -332,59 +410,102 @@ void ExecuteSignal(string signalJson)
    bool success = false;
    ulong ticket = 0;
    string errorMsg = "";
+   int retryCount = 0;
    
    Print("Executing: ", action, " ", symbol, " vol=", volume, " sl=", sl, " tp=", tp, " bid=", bid, " ask=", ask, " tick_age=", tickAge, "s");
    
-   // Use price=0 to let MT5 use current market price (more robust than passing explicit price)
-   if(action == "buy")
+   // Retry loop with exponential backoff
+   while(!success && retryCount <= MAX_RETRIES)
    {
-      if(sl > 0 && sl > bid - minDist) sl = NormalizeDouble(bid - minDist - 10*point, digits);
-      if(tp > 0 && tp < ask + minDist) tp = NormalizeDouble(ask + minDist + 10*point, digits);
-      
-      // First try with SL/TP, using price=0 for market order
-      success = trade.Buy(volume, symbol, 0, sl, tp, comment);
-      if(success) { ticket = trade.ResultOrder(); }
-      else if(trade.ResultRetcode() == 10016 || trade.ResultRetcode() == 10021)
+      if(retryCount > 0)
       {
-         // Invalid stops or off quotes - try without SL/TP first, then modify
-         success = trade.Buy(volume, symbol, 0, 0, 0, comment);
-         if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
-         else { errorMsg = StringFormat("Buy failed: %d", trade.ResultRetcode()); }
+         int delayMs = RETRY_DELAY_MS * (int)MathPow(2, retryCount - 1);  // Exponential backoff
+         Print("Retry ", retryCount, "/", MAX_RETRIES, " after ", delayMs, "ms delay");
+         Sleep(delayMs);
+         
+         // Refresh tick data before retry
+         if(SymbolInfoTick(symbol, tick))
+         {
+            ask = tick.ask;
+            bid = tick.bid;
+         }
       }
-      else { errorMsg = StringFormat("Buy failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription()); }
-   }
-   else if(action == "sell")
-   {
-      if(sl > 0 && sl < ask + minDist) sl = NormalizeDouble(ask + minDist + 10*point, digits);
-      if(tp > 0 && tp > bid - minDist) tp = NormalizeDouble(bid - minDist - 10*point, digits);
       
-      // First try with SL/TP, using price=0 for market order
-      success = trade.Sell(volume, symbol, 0, sl, tp, comment);
-      if(success) { ticket = trade.ResultOrder(); }
-      else if(trade.ResultRetcode() == 10016 || trade.ResultRetcode() == 10021)
+      // Use price=0 to let MT5 use current market price (more robust than passing explicit price)
+      if(action == "buy")
       {
-         // Invalid stops or off quotes - try without SL/TP first, then modify
-         success = trade.Sell(volume, symbol, 0, 0, 0, comment);
-         if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
-         else { errorMsg = StringFormat("Sell failed: %d", trade.ResultRetcode()); }
+         if(sl > 0 && sl > bid - minDist) sl = NormalizeDouble(bid - minDist - 10*point, digits);
+         if(tp > 0 && tp < ask + minDist) tp = NormalizeDouble(ask + minDist + 10*point, digits);
+         
+         // First try with SL/TP, using price=0 for market order
+         success = trade.Buy(volume, symbol, 0, sl, tp, comment);
+         if(success) { ticket = trade.ResultOrder(); }
+         else if(trade.ResultRetcode() == 10016 || trade.ResultRetcode() == 10021)
+         {
+            // Invalid stops or off quotes - try without SL/TP first, then modify
+            success = trade.Buy(volume, symbol, 0, 0, 0, comment);
+            if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
+            else { errorMsg = StringFormat("Buy failed: %d", trade.ResultRetcode()); }
+         }
+         else { errorMsg = StringFormat("Buy failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription()); }
       }
-      else { errorMsg = StringFormat("Sell failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription()); }
+      else if(action == "sell")
+      {
+         if(sl > 0 && sl < ask + minDist) sl = NormalizeDouble(ask + minDist + 10*point, digits);
+         if(tp > 0 && tp > bid - minDist) tp = NormalizeDouble(bid - minDist - 10*point, digits);
+         
+         // First try with SL/TP, using price=0 for market order
+         success = trade.Sell(volume, symbol, 0, sl, tp, comment);
+         if(success) { ticket = trade.ResultOrder(); }
+         else if(trade.ResultRetcode() == 10016 || trade.ResultRetcode() == 10021)
+         {
+            // Invalid stops or off quotes - try without SL/TP first, then modify
+            success = trade.Sell(volume, symbol, 0, 0, 0, comment);
+            if(success) { ticket = trade.ResultOrder(); Sleep(100); trade.PositionModify(ticket, origSL, origTP); }
+            else { errorMsg = StringFormat("Sell failed: %d", trade.ResultRetcode()); }
+         }
+         else { errorMsg = StringFormat("Sell failed: %d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription()); }
+      }
+      else if(action == "close")
+      {
+         ulong posTicket = (ulong)ExtractJsonDouble(signalJson, "ticket");
+         if(posTicket > 0) { success = trade.PositionClose(posTicket); if(!success) errorMsg = StringFormat("Close failed: %d", trade.ResultRetcode()); }
+         break;  // Don't retry close operations
+      }
+      else if(action == "modify")
+      {
+         ulong posTicket = (ulong)ExtractJsonDouble(signalJson, "ticket");
+         if(posTicket > 0) { success = trade.PositionModify(posTicket, sl, tp); if(!success) errorMsg = StringFormat("Modify failed: %d", trade.ResultRetcode()); }
+         break;  // Don't retry modify operations
+      }
+      
+      // Check if error is retryable
+      int retcode = trade.ResultRetcode();
+      bool retryable = (retcode == 10004 || retcode == 10006 || retcode == 10007 || 
+                        retcode == 10021 || retcode == 10024 || retcode == 10031);
+      // 10004=Requote, 10006=Reject, 10007=Canceled, 10021=Off quotes, 10024=Too frequent, 10031=No connection
+      
+      if(!success && !retryable)
+         break;  // Non-retryable error
+      
+      retryCount++;
    }
-   else if(action == "close")
+   
+   // Update failure tracking
+   if(success)
    {
-      ulong posTicket = (ulong)ExtractJsonDouble(signalJson, "ticket");
-      if(posTicket > 0) { success = trade.PositionClose(posTicket); if(!success) errorMsg = StringFormat("Close failed: %d", trade.ResultRetcode()); }
+      consecutiveFailures = 0;
    }
-   else if(action == "modify")
+   else
    {
-      ulong posTicket = (ulong)ExtractJsonDouble(signalJson, "ticket");
-      if(posTicket > 0) { success = trade.PositionModify(posTicket, sl, tp); if(!success) errorMsg = StringFormat("Modify failed: %d", trade.ResultRetcode()); }
+      consecutiveFailures++;
+      lastFailureTime = TimeCurrent();
    }
    
    SendSignalResult(signalId, success, ticket, errorMsg);
    lastSignalId = signalId;
-   if(success) Print("Signal executed. Ticket: ", ticket);
-   else Print("Signal failed: ", errorMsg);
+   if(success) Print("Signal executed. Ticket: ", ticket, " (retries: ", retryCount, ")");
+   else Print("Signal failed after ", retryCount, " retries: ", errorMsg);
 }
 
 void SendSignalResult(string signalId, bool success, ulong ticket, string error)
