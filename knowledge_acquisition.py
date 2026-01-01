@@ -465,53 +465,87 @@ class RedditCollector:
 
 
 class NewsAPICollector:
-    """Collects news from NewsAPI"""
+    """
+    Collects news from NewsAPI.ai (Event Registry)
+    
+    IMPORTANT: Free tier has only 2000 tokens TOTAL (not monthly).
+    We use tokens very conservatively:
+    - Only query once per 6 hours (4 queries/day max)
+    - Single focused query for forex/currency news
+    - Limit to 5 articles per query
+    - Each query uses ~1 token, so ~4 tokens/day = ~500 days of usage
+    """
     
     def __init__(self, sentiment_analyzer: SentimentAnalyzer):
         self.sentiment = sentiment_analyzer
-        self.api_key = os.environ.get('NEWS_API_KEY')
-        self.base_url = "https://newsapi.org/v2/everything"
+        self.api_key = os.environ.get('NEWSAPI_AI_KEY')  # NewsAPI.ai key
+        self.base_url = "https://eventregistry.org/api/v1/article/getArticles"
         self.seen_articles: set = set()
+        self.last_query_time: Optional[datetime] = None
+        self.query_interval_hours = 6  # Only query every 6 hours to conserve tokens
+        self.tokens_used = 0
+        self.max_tokens = 2000  # Free tier limit
     
-    def collect(self, max_articles: int = 20) -> List[MarketInsight]:
-        """Collect forex-related news articles"""
+    def collect(self, max_articles: int = 5) -> List[MarketInsight]:
+        """
+        Collect forex-related news articles from NewsAPI.ai
+        Very conservative to preserve tokens (2000 total for free tier)
+        """
         if not self.api_key or not REQUESTS_AVAILABLE:
-            logger.debug("NewsAPI not configured, skipping collection")
+            logger.debug("NewsAPI.ai not configured, skipping collection")
+            return []
+        
+        # Check if we should query (rate limit to preserve tokens)
+        if self.last_query_time:
+            hours_since_last = (datetime.utcnow() - self.last_query_time).total_seconds() / 3600
+            if hours_since_last < self.query_interval_hours:
+                logger.debug(f"NewsAPI.ai: Skipping query, only {hours_since_last:.1f}h since last (need {self.query_interval_hours}h)")
+                return []
+        
+        # Check token budget
+        if self.tokens_used >= self.max_tokens - 10:
+            logger.warning(f"NewsAPI.ai: Token budget nearly exhausted ({self.tokens_used}/{self.max_tokens})")
             return []
         
         insights = []
         
-        # Search queries for forex news
-        queries = ['forex trading', 'currency exchange', 'EUR USD', 'federal reserve']
-        
-        for query in queries:
-            try:
-                articles = self._search_news(query, max_articles // len(queries))
-                insights.extend(articles)
-                time.sleep(0.5)  # Rate limiting
-            except Exception as e:
-                logger.warning(f"Error searching NewsAPI for '{query}': {e}")
+        try:
+            # Single focused query for forex news to minimize token usage
+            articles = self._search_news("forex currency exchange rate central bank", max_articles)
+            insights.extend(articles)
+            self.last_query_time = datetime.utcnow()
+            self.tokens_used += 1
+            logger.info(f"NewsAPI.ai: Query successful, tokens used: {self.tokens_used}/{self.max_tokens}")
+        except Exception as e:
+            logger.warning(f"Error searching NewsAPI.ai: {e}")
         
         return insights
     
     def _search_news(self, query: str, limit: int) -> List[MarketInsight]:
-        """Search for news articles"""
+        """Search for news articles using NewsAPI.ai Event Registry API"""
         insights = []
         
         try:
-            params = {
-                'q': query,
-                'apiKey': self.api_key,
-                'language': 'en',
-                'sortBy': 'publishedAt',
-                'pageSize': limit
+            # NewsAPI.ai uses a different API structure
+            payload = {
+                "apiKey": self.api_key,
+                "keyword": query,
+                "lang": "eng",
+                "articlesSortBy": "date",
+                "articlesCount": limit,
+                "includeArticleBody": False,  # Save tokens by not fetching full body
+                "includeArticleConcepts": False,
+                "includeArticleCategories": False,
+                "includeArticleImage": False,
             }
             
-            response = requests.get(self.base_url, params=params, timeout=10)
+            response = requests.post(self.base_url, json=payload, timeout=15)
             response.raise_for_status()
             data = response.json()
             
-            for article in data.get('articles', []):
+            articles = data.get('articles', {}).get('results', [])
+            
+            for article in articles:
                 article_id = hashlib.md5(
                     (article.get('title', '') + article.get('url', '')).encode()
                 ).hexdigest()
@@ -522,7 +556,7 @@ class NewsAPICollector:
                 self.seen_articles.add(article_id)
                 
                 title = article.get('title', '')
-                description = article.get('description', '')
+                description = article.get('body', '')[:300] if article.get('body') else ''
                 content = f"{title}. {description}"
                 
                 score, label = self.sentiment.analyze(content)
@@ -530,29 +564,34 @@ class NewsAPICollector:
                 
                 # Parse timestamp
                 try:
-                    timestamp = datetime.fromisoformat(
-                        article.get('publishedAt', '').replace('Z', '+00:00')
-                    )
+                    date_str = article.get('dateTime', article.get('date', ''))
+                    if date_str:
+                        timestamp = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                    else:
+                        timestamp = datetime.utcnow()
                 except:
                     timestamp = datetime.utcnow()
                 
+                source_name = article.get('source', {}).get('title', 'newsapi.ai')
+                
                 insight = MarketInsight(
-                    source="newsapi",
+                    source=f"newsapi_ai_{source_name}",
                     title=title,
-                    content=description[:500] if description else '',
+                    content=description[:500] if description else title,
                     sentiment_score=score,
                     sentiment_label=label,
-                    relevance_score=0.6 if symbols else 0.4,
+                    relevance_score=0.7 if symbols else 0.5,
                     symbols_mentioned=symbols,
                     timestamp=timestamp,
                     url=article.get('url'),
-                    insight_type="news"
+                    insight_type="news",
+                    impact_level="medium"
                 )
                 
                 insights.append(insight)
                 
         except Exception as e:
-            logger.error(f"NewsAPI error: {e}")
+            logger.error(f"NewsAPI.ai error: {e}")
         
         return insights
     
@@ -562,13 +601,35 @@ class NewsAPICollector:
         text_upper = text.upper()
         
         forex_pairs = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD']
+        currencies = ['EUR', 'USD', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'DOLLAR', 'EURO', 'YEN', 'POUND']
         
         for pair in forex_pairs:
             if pair in text_upper or pair[:3] + '/' + pair[3:] in text_upper:
                 if pair not in symbols:
                     symbols.append(pair)
         
+        # Also detect currency mentions
+        for currency in currencies:
+            if currency in text_upper:
+                if currency in ['DOLLAR', 'USD'] and 'EURUSD' not in symbols:
+                    symbols.append('EURUSD')
+                elif currency in ['EURO', 'EUR'] and 'EURUSD' not in symbols:
+                    symbols.append('EURUSD')
+                elif currency in ['POUND', 'GBP'] and 'GBPUSD' not in symbols:
+                    symbols.append('GBPUSD')
+                elif currency in ['YEN', 'JPY'] and 'USDJPY' not in symbols:
+                    symbols.append('USDJPY')
+        
         return symbols
+    
+    def get_token_usage(self) -> Dict:
+        """Get current token usage stats"""
+        return {
+            'tokens_used': self.tokens_used,
+            'tokens_remaining': self.max_tokens - self.tokens_used,
+            'max_tokens': self.max_tokens,
+            'last_query': self.last_query_time.isoformat() if self.last_query_time else None
+        }
 
 
 class ForexCalendarCollector:
