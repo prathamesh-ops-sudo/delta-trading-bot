@@ -630,6 +630,28 @@ def run_mt5_bridge(args):
         research_production_manager = None
         logger.warning(f"Research/production manager not available: {e}")
     
+    # Tier 4: Governance (Auth, Audit Trail, Incident Playbooks)
+    try:
+        from governance import (
+            get_governance_manager,
+            authenticate_user,
+            validate_session,
+            log_trade,
+            log_risk_event,
+            create_incident,
+            get_governance_state,
+            GovernanceManager,
+            AuditEventType,
+            IncidentSeverity
+        )
+        governance_manager = get_governance_manager()
+        GOVERNANCE_AVAILABLE = True
+        logger.info(f"Governance manager started - Auth, audit trail, incident playbooks enabled")
+    except ImportError as e:
+        GOVERNANCE_AVAILABLE = False
+        governance_manager = None
+        logger.warning(f"Governance manager not available: {e}")
+    
     try:
         from phoenix_brain import phoenix_brain, TradingState
         PHOENIX_BRAIN_AVAILABLE = True
@@ -655,9 +677,10 @@ def run_mt5_bridge(args):
     logger.info(f"Advanced Knowledge - Calendar/Sentiment/CrossAsset: {ADVANCED_KNOWLEDGE_AVAILABLE}")
     logger.info(f"Adaptive Learning - Online/Offline: {ADAPTIVE_LEARNING_AVAILABLE}")
     logger.info(f"Trade Journaling - Uncertainty Governor: {TRADE_JOURNALING_AVAILABLE}")
-    logger.info(f"Institutional Event System - TCA/Reconciliation: {EVENT_SYSTEM_AVAILABLE}")
-    logger.info(f"Portfolio Risk Manager - Kill Switch/Exposure/Stress: {PORTFOLIO_RISK_AVAILABLE}")
-    logger.info(f"Research/Production Manager - Shadow Mode/Experiments: {RESEARCH_PRODUCTION_AVAILABLE}")
+    logger.info(f"Tier 1 - Institutional Event System - TCA/Reconciliation: {EVENT_SYSTEM_AVAILABLE}")
+    logger.info(f"Tier 2 - Portfolio Risk Manager - Kill Switch/Exposure/Stress: {PORTFOLIO_RISK_AVAILABLE}")
+    logger.info(f"Tier 3 - Research/Production Manager - Shadow Mode/Experiments: {RESEARCH_PRODUCTION_AVAILABLE}")
+    logger.info(f"Tier 4 - Governance Manager - Auth/Audit/Incidents: {GOVERNANCE_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread
@@ -880,6 +903,30 @@ def run_mt5_bridge(args):
                                                 logger.debug(f"[TCA] Recorded trade {ticket} for transaction cost analysis")
                                             except Exception as e:
                                                 logger.warning(f"TCA recording error: {e}")
+                                        
+                                        # Tier 4: Log trade to governance audit trail
+                                        if GOVERNANCE_AVAILABLE and governance_manager:
+                                            try:
+                                                log_trade(
+                                                    event_type="executed",
+                                                    symbol=symbol,
+                                                    action=signal.direction.name,
+                                                    details={
+                                                        "ticket": ticket,
+                                                        "volume": position_size,
+                                                        "entry_price": signal.entry_price,
+                                                        "stop_loss": signal.stop_loss,
+                                                        "take_profit": signal.take_profit,
+                                                        "strategy": signal.strategy,
+                                                        "confidence": signal.confidence,
+                                                        "regime": regime_name,
+                                                        "thesis": thesis.entry_reason
+                                                    },
+                                                    result="success"
+                                                )
+                                                logger.debug(f"[AUDIT] Trade {ticket} logged to governance audit trail")
+                                            except Exception as e:
+                                                logger.warning(f"Governance audit logging error: {e}")
                                         
                                         # Get pre-trade wisdom from past insights
                                         wisdom = reflection_engine.get_pre_trade_wisdom(symbol, signal.strategy, regime_name)

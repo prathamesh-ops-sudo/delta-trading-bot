@@ -37,7 +37,11 @@ try:
     YFINANCE_AVAILABLE = True
 except ImportError:
     YFINANCE_AVAILABLE = False
-    logger.warning("yfinance not available - cross-asset data disabled")
+    logger.warning("yfinance not available - will try Alpha Vantage")
+
+# Alpha Vantage API configuration
+ALPHA_VANTAGE_API_KEY = os.environ.get('ALPHA_VANTAGE_API_KEY', '6Z3YS9ZBFW0NFYDD')
+ALPHA_VANTAGE_AVAILABLE = REQUESTS_AVAILABLE and bool(ALPHA_VANTAGE_API_KEY)
 
 
 # ============================================================================
@@ -712,6 +716,17 @@ class CrossAssetRegimeDetector:
         self.cache_minutes = cache_minutes
         self._lock = threading.Lock()
     
+    # Alpha Vantage symbol mapping (different from yfinance)
+    ALPHA_VANTAGE_SYMBOLS = {
+        'SPY': 'SPY',      # S&P 500 ETF
+        'GLD': 'GLD',      # Gold ETF
+        'USO': 'USO',      # Oil ETF
+        '^VIX': 'VIX',     # VIX (use CBOE VIX)
+        'UUP': 'UUP',      # Dollar Index ETF
+        'TLT': 'TLT',      # 20+ Year Treasury ETF
+        'SHY': 'SHY',      # 1-3 Year Treasury ETF
+    }
+    
     def fetch_cross_asset_data(self) -> Dict[str, CrossAssetData]:
         """Fetch current data for all cross-asset symbols"""
         
@@ -719,10 +734,24 @@ class CrossAssetRegimeDetector:
         if self.last_fetch and (datetime.utcnow() - self.last_fetch).seconds < self.cache_minutes * 60:
             return self.asset_data
         
-        if not YFINANCE_AVAILABLE:
-            logger.warning("yfinance not available, using fallback data")
-            return self._get_fallback_data()
+        # Try yfinance first
+        if YFINANCE_AVAILABLE:
+            data = self._fetch_from_yfinance()
+            if data:
+                return data
         
+        # Try Alpha Vantage as fallback
+        if ALPHA_VANTAGE_AVAILABLE:
+            data = self._fetch_from_alpha_vantage()
+            if data:
+                logger.info("Cross-asset data fetched from Alpha Vantage")
+                return data
+        
+        logger.warning("No data source available, using fallback data")
+        return self._get_fallback_data()
+    
+    def _fetch_from_yfinance(self) -> Dict[str, CrossAssetData]:
+        """Fetch data using yfinance"""
         data = {}
         
         for symbol, name in self.CROSS_ASSET_SYMBOLS.items():
@@ -764,11 +793,116 @@ class CrossAssetRegimeDetector:
                 )
                 
             except Exception as e:
-                logger.warning(f"Error fetching {symbol}: {e}")
+                logger.warning(f"Error fetching {symbol} from yfinance: {e}")
         
-        with self._lock:
-            self.asset_data = data
-            self.last_fetch = datetime.utcnow()
+        if data:
+            with self._lock:
+                self.asset_data = data
+                self.last_fetch = datetime.utcnow()
+        
+        return data
+    
+    def _fetch_from_alpha_vantage(self) -> Dict[str, CrossAssetData]:
+        """Fetch data using Alpha Vantage API"""
+        data = {}
+        
+        # Alpha Vantage has rate limits (5 calls/min for free tier)
+        # We'll fetch key symbols only: SPY, GLD, UUP (DXY proxy)
+        priority_symbols = ['SPY', 'GLD', 'UUP']
+        
+        for symbol in priority_symbols:
+            try:
+                av_symbol = self.ALPHA_VANTAGE_SYMBOLS.get(symbol, symbol)
+                
+                # Use TIME_SERIES_DAILY for historical data
+                url = f"https://www.alphavantage.co/query"
+                params = {
+                    'function': 'TIME_SERIES_DAILY',
+                    'symbol': av_symbol,
+                    'apikey': ALPHA_VANTAGE_API_KEY,
+                    'outputsize': 'compact'  # Last 100 data points
+                }
+                
+                response = requests.get(url, params=params, timeout=10)
+                result = response.json()
+                
+                if 'Time Series (Daily)' not in result:
+                    logger.warning(f"Alpha Vantage: No data for {symbol}: {result.get('Note', result.get('Error Message', 'Unknown error'))}")
+                    continue
+                
+                time_series = result['Time Series (Daily)']
+                dates = sorted(time_series.keys(), reverse=True)
+                
+                if not dates:
+                    continue
+                
+                # Get current price and calculate changes
+                current_price = float(time_series[dates[0]]['4. close'])
+                
+                change_1d = 0.0
+                change_5d = 0.0
+                change_20d = 0.0
+                
+                if len(dates) >= 2:
+                    prev_price = float(time_series[dates[1]]['4. close'])
+                    change_1d = ((current_price / prev_price) - 1) * 100
+                
+                if len(dates) >= 6:
+                    price_5d = float(time_series[dates[5]]['4. close'])
+                    change_5d = ((current_price / price_5d) - 1) * 100
+                
+                if len(dates) >= 21:
+                    price_20d = float(time_series[dates[20]]['4. close'])
+                    change_20d = ((current_price / price_20d) - 1) * 100
+                
+                # Calculate volatility
+                volatility = 0.0
+                if len(dates) >= 20:
+                    closes = [float(time_series[d]['4. close']) for d in dates[:20]]
+                    returns = [(closes[i] / closes[i+1]) - 1 for i in range(len(closes)-1)]
+                    if returns:
+                        import statistics
+                        volatility = statistics.stdev(returns) * (252 ** 0.5) * 100
+                
+                data[symbol] = CrossAssetData(
+                    symbol=symbol,
+                    price=current_price,
+                    change_1d=change_1d,
+                    change_5d=change_5d,
+                    change_20d=change_20d,
+                    volatility=volatility
+                )
+                
+                # Rate limiting - wait between calls
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.warning(f"Error fetching {symbol} from Alpha Vantage: {e}")
+        
+        # Add VIX estimate based on SPY volatility if we have SPY data
+        if 'SPY' in data:
+            # VIX is roughly SPY volatility * 100 / 16 (simplified)
+            spy_vol = data['SPY'].volatility
+            estimated_vix = max(12, min(40, spy_vol * 1.2))  # Clamp to reasonable range
+            data['^VIX'] = CrossAssetData(
+                symbol='^VIX',
+                price=estimated_vix,
+                change_1d=0.0,
+                change_5d=0.0,
+                change_20d=0.0,
+                volatility=0.0
+            )
+        
+        # Add fallback for missing symbols
+        fallback = self._get_fallback_data()
+        for symbol in self.CROSS_ASSET_SYMBOLS.keys():
+            if symbol not in data:
+                data[symbol] = fallback.get(symbol, CrossAssetData(symbol, 0, 0, 0, 0, 0))
+        
+        if data:
+            with self._lock:
+                self.asset_data = data
+                self.last_fetch = datetime.utcnow()
         
         return data
     
