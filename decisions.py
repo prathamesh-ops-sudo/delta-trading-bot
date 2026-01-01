@@ -85,6 +85,28 @@ except ImportError:
     get_journaling_engine = None
     evaluate_trade = None
 
+try:
+    from event_log import (
+        get_event_system,
+        log_decision_cycle,
+        log_market_snapshot,
+        log_signal,
+        log_confidence_adjustment,
+        log_gate_check,
+        log_trade_decision,
+        end_decision_cycle,
+        MarketSnapshot,
+        SignalEvent,
+        ConfidenceAdjustment,
+        GateCheckResult,
+        InstitutionalEventSystem
+    )
+    EVENT_LOG_AVAILABLE = True
+except ImportError:
+    EVENT_LOG_AVAILABLE = False
+    get_event_system = None
+    log_decision_cycle = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -583,6 +605,9 @@ class VeteranTraderDecisionEngine:
         # Trade journaling and uncertainty governor for human-like decision making
         self.journaling_engine = get_journaling_engine() if TRADE_JOURNALING_AVAILABLE else None
         
+        # Institutional event logging system for measurement & auditability (Tier 1)
+        self.event_system = get_event_system() if EVENT_LOG_AVAILABLE else None
+        
         # Decision thresholds - INCREASED for higher-quality trades
         # Most retail forex systems lose money by overtrading
         # Better to take fewer, higher-quality trades with clear edge
@@ -602,7 +627,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}, EventLog: {EVENT_LOG_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -614,6 +639,16 @@ class VeteranTraderDecisionEngine:
             account_balance: Current account balance
             spread_pips: Current spread in pips (from real market data)
         """
+        import time
+        start_time = time.time()
+        
+        # Start decision cycle logging (Tier 1: Measurement & Auditability)
+        cycle_id = None
+        if self.event_system and EVENT_LOG_AVAILABLE:
+            try:
+                cycle_id = self.event_system.event_logger.start_decision_cycle(symbol)
+            except Exception as e:
+                logger.warning(f"Event logging error: {e}")
         
         # Get primary timeframe data (H1 for analysis)
         primary_tf = 'H1'
@@ -621,10 +656,16 @@ class VeteranTraderDecisionEngine:
             primary_tf = list(mtf_data.keys())[0] if mtf_data else None
         
         if not primary_tf:
+            if cycle_id and self.event_system:
+                self.event_system.event_logger.log_trade_decision(cycle_id, "no_trade", "No data available")
+                self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
             return None
         
         df = mtf_data[primary_tf]
         if len(df) < 100:
+            if cycle_id and self.event_system:
+                self.event_system.event_logger.log_trade_decision(cycle_id, "no_trade", "Insufficient data")
+                self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
             return None
         
         # 1. Get regime context
@@ -750,6 +791,32 @@ class VeteranTraderDecisionEngine:
         bb_position = (current_price - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1]) \
             if (bb_upper.iloc[-1] - bb_lower.iloc[-1]) > 0 else 0.5
         
+        # Log market snapshot (Tier 1: Measurement & Auditability)
+        if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+            try:
+                bid = current_price - (spread_pips * pip_value / 2) if 'pip_value' in dir() else current_price
+                ask = current_price + (spread_pips * pip_value / 2) if 'pip_value' in dir() else current_price
+                pip_value_temp = 0.01 if 'JPY' in symbol else 0.0001
+                snapshot = MarketSnapshot(
+                    timestamp=datetime.now(),
+                    symbol=symbol,
+                    bid=current_price - (spread_pips * pip_value_temp / 2),
+                    ask=current_price + (spread_pips * pip_value_temp / 2),
+                    spread_pips=spread_pips,
+                    rsi=float(rsi) if not pd.isna(rsi) else 50.0,
+                    adx=float(adx_value),
+                    atr=float(atr) if not pd.isna(atr) else 0.0,
+                    macd=float(macd_value),
+                    bb_position=float(bb_position),
+                    regime=regime.value if hasattr(regime, 'value') else str(regime),
+                    mtf_bias=mtf_bias.name if hasattr(mtf_bias, 'name') else str(mtf_bias),
+                    mtf_alignment=float(mtf_alignment),
+                    macro_regime=macro_regime.get('regime', 'unknown') if macro_regime else 'unknown'
+                )
+                self.event_system.event_logger.log_market_snapshot(cycle_id, snapshot)
+            except Exception as e:
+                logger.warning(f"Market snapshot logging error: {e}")
+        
         # 4. Detect FVGs and liquidity sweeps
         pip_value = 0.01 if 'JPY' in symbol else 0.0001
         fvgs = self.fvg_detector.detect_fvg(df, pip_value)
@@ -834,14 +901,52 @@ class VeteranTraderDecisionEngine:
             signals = self._apply_ai_analysis(signals, ai_analysis)
         
         if not signals:
+            if cycle_id and self.event_system:
+                self.event_system.event_logger.log_trade_decision(cycle_id, "no_trade", "No signals generated")
+                self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
             return None
+        
+        # Log all generated signals (Tier 1: Measurement & Auditability)
+        if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+            try:
+                for strategy_name, sig_data in signals:
+                    direction_val, conf, reason = sig_data
+                    signal_event = SignalEvent(
+                        timestamp=datetime.now(),
+                        symbol=symbol,
+                        strategy=strategy_name,
+                        direction="BUY" if direction_val == TradeDirection.LONG else "SELL",
+                        base_confidence=conf,
+                        entry_reason=reason
+                    )
+                    self.event_system.event_logger.log_signal(cycle_id, signal_event, is_selected=False)
+            except Exception as e:
+                logger.warning(f"Signal logging error: {e}")
         
         # 6. Select best signal based on weights and confidence
         best_signal = self._select_best_signal(signals)
         if not best_signal:
+            if cycle_id and self.event_system:
+                self.event_system.event_logger.log_trade_decision(cycle_id, "no_trade", "No best signal selected")
+                self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
             return None
         
         strategy, (direction, base_confidence, entry_reason) = best_signal
+        
+        # Log selected signal (Tier 1: Measurement & Auditability)
+        if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+            try:
+                selected_signal = SignalEvent(
+                    timestamp=datetime.now(),
+                    symbol=symbol,
+                    strategy=strategy,
+                    direction="BUY" if direction == TradeDirection.LONG else "SELL",
+                    base_confidence=base_confidence,
+                    entry_reason=entry_reason
+                )
+                self.event_system.event_logger.log_signal(cycle_id, selected_signal, is_selected=True)
+            except Exception as e:
+                logger.warning(f"Selected signal logging error: {e}")
         
         # 7. Calculate final confidence with all factors
         confidence = self._calculate_final_confidence(
@@ -849,13 +954,44 @@ class VeteranTraderDecisionEngine:
         )
         
         # Apply macro regime adjustment (DXY, VIX, Treasury yields)
+        prev_confidence = confidence
         confidence *= macro_confidence_adjustment
         
+        # Log macro confidence adjustment (Tier 1: Measurement & Auditability)
+        if cycle_id and self.event_system and EVENT_LOG_AVAILABLE and macro_confidence_adjustment != 1.0:
+            try:
+                adjustment = ConfidenceAdjustment(
+                    source="macro",
+                    original_confidence=prev_confidence,
+                    adjusted_confidence=confidence,
+                    adjustment_factor=macro_confidence_adjustment,
+                    reason=f"Macro regime: {macro_regime.get('regime', 'unknown') if macro_regime else 'unknown'}, VIX: {macro_regime.get('vix_level', 'unknown') if macro_regime else 'unknown'}"
+                )
+                self.event_system.event_logger.log_confidence_adjustment(cycle_id, adjustment)
+            except Exception as e:
+                logger.warning(f"Macro adjustment logging error: {e}")
+        
         # Apply advanced knowledge adjustment (economic calendar, topic sentiment, cross-asset regime)
+        prev_confidence = confidence
         confidence *= advanced_confidence_adjustment
+        
+        # Log advanced knowledge confidence adjustment (Tier 1: Measurement & Auditability)
+        if cycle_id and self.event_system and EVENT_LOG_AVAILABLE and advanced_confidence_adjustment != 1.0:
+            try:
+                adjustment = ConfidenceAdjustment(
+                    source="advanced_knowledge",
+                    original_confidence=prev_confidence,
+                    adjusted_confidence=confidence,
+                    adjustment_factor=advanced_confidence_adjustment,
+                    reason=f"Advanced knowledge confidence: {advanced_context.get('confidence', 0.5) if advanced_context else 0.5:.2f}"
+                )
+                self.event_system.event_logger.log_confidence_adjustment(cycle_id, adjustment)
+            except Exception as e:
+                logger.warning(f"Advanced knowledge adjustment logging error: {e}")
         
         # Apply adaptive learning adjustment (online/offline learning)
         adaptive_confidence_adjustment = 1.0
+        prev_confidence_adaptive = confidence
         if self.adaptive_learning:
             try:
                 # Get adjusted confidence based on learned parameters
@@ -874,6 +1010,20 @@ class VeteranTraderDecisionEngine:
                     logger.debug(f"Session quality adjustment: {session_quality:.2f}")
                 
                 logger.debug(f"Adaptive learning adjustment for {symbol}: {adaptive_confidence_adjustment:.2f}")
+                
+                # Log adaptive learning confidence adjustment (Tier 1: Measurement & Auditability)
+                if cycle_id and self.event_system and EVENT_LOG_AVAILABLE and adaptive_confidence_adjustment != 1.0:
+                    try:
+                        adjustment = ConfidenceAdjustment(
+                            source="adaptive_learning",
+                            original_confidence=prev_confidence_adaptive,
+                            adjusted_confidence=confidence,
+                            adjustment_factor=adaptive_confidence_adjustment,
+                            reason=f"Adaptive learning adjustment, session_quality={session_quality:.2f}"
+                        )
+                        self.event_system.event_logger.log_confidence_adjustment(cycle_id, adjustment)
+                    except Exception as e:
+                        logger.warning(f"Adaptive learning adjustment logging error: {e}")
             except Exception as e:
                 logger.warning(f"Adaptive learning error: {e}")
         
@@ -914,6 +1064,20 @@ class VeteranTraderDecisionEngine:
                 # Check if uncertainty governor says "I don't know"
                 if not evaluation.get('should_trade', True):
                     logger.info(f"[UNCERTAINTY GOVERNOR] {symbol} rejected: {evaluation.get('reason', 'Too uncertain')}")
+                    # Log uncertainty gate rejection (Tier 1: Measurement & Auditability)
+                    if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+                        try:
+                            gate_result = GateCheckResult(
+                                gate_name="uncertainty_governor",
+                                passed=False,
+                                reason=evaluation.get('reason', 'Too uncertain'),
+                                details={'uncertainty_level': evaluation.get('uncertainty_level', 'unknown')}
+                            )
+                            self.event_system.event_logger.log_gate_check(cycle_id, gate_result)
+                            self.event_system.event_logger.log_trade_decision(cycle_id, "rejected", f"Uncertainty governor: {evaluation.get('reason', 'Too uncertain')}")
+                            self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
+                        except Exception as e:
+                            logger.warning(f"Uncertainty gate logging error: {e}")
                     return None
                 
                 # Apply position multiplier based on uncertainty
@@ -929,6 +1093,20 @@ class VeteranTraderDecisionEngine:
         confidence = min(confidence, 0.95)  # Cap at 95%
         
         if confidence < self.min_confidence:
+            # Log confidence threshold rejection (Tier 1: Measurement & Auditability)
+            if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+                try:
+                    gate_result = GateCheckResult(
+                        gate_name="confidence_threshold",
+                        passed=False,
+                        reason=f"Confidence {confidence:.2f} < min {self.min_confidence}",
+                        details={'confidence': confidence, 'min_confidence': self.min_confidence}
+                    )
+                    self.event_system.event_logger.log_gate_check(cycle_id, gate_result)
+                    self.event_system.event_logger.log_trade_decision(cycle_id, "rejected", f"Confidence below threshold: {confidence:.2f}")
+                    self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
+                except Exception as e:
+                    logger.warning(f"Confidence gate logging error: {e}")
             return None
         
         # 8. Get trading parameters from agentic system
@@ -994,11 +1172,34 @@ class VeteranTraderDecisionEngine:
                 current_balance=account_balance
             )
             
+            # Log all gate checks (Tier 1: Measurement & Auditability)
+            if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+                try:
+                    for gate in gate_results:
+                        gate_result = GateCheckResult(
+                            gate_name=gate.gate_type,
+                            passed=gate.allowed,
+                            reason=gate.reason,
+                            details={'spread': spread_pips, 'expected_profit': expected_profit_pips}
+                        )
+                        self.event_system.event_logger.log_gate_check(cycle_id, gate_result)
+                except Exception as e:
+                    logger.warning(f"Gate check logging error: {e}")
+            
             if not gates_passed:
                 # Log which gates failed
                 failed_gates = [r for r in gate_results if not r.allowed]
                 for gate in failed_gates:
                     logger.info(f"[TRADE GATE] {symbol} rejected by {gate.gate_type}: {gate.reason}")
+                
+                # Log trade decision rejection (Tier 1: Measurement & Auditability)
+                if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+                    try:
+                        failed_gate_names = [g.gate_type for g in failed_gates]
+                        self.event_system.event_logger.log_trade_decision(cycle_id, "rejected", f"Trade gates failed: {', '.join(failed_gate_names)}")
+                        self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
+                    except Exception as e:
+                        logger.warning(f"Gate rejection logging error: {e}")
                 return None
             
             # Log gate summary for successful trades
@@ -1046,6 +1247,19 @@ class VeteranTraderDecisionEngine:
             trailing_sl_enabled=trailing_enabled,
             trailing_sl_distance=trailing_distance
         )
+        
+        # Log successful trade decision (Tier 1: Measurement & Auditability)
+        if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+            try:
+                direction_str = "BUY" if direction == TradeDirection.LONG else "SELL"
+                self.event_system.event_logger.log_trade_decision(
+                    cycle_id, 
+                    "trade", 
+                    f"{direction_str} {symbol} @ {entry_price:.5f}, SL={stop_loss:.5f}, TP={take_profit:.5f}, size={position_size:.2f}, conf={confidence:.2f}"
+                )
+                self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
+            except Exception as e:
+                logger.warning(f"Trade decision logging error: {e}")
         
         return signal
     

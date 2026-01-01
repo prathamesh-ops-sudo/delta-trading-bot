@@ -577,6 +577,22 @@ def run_mt5_bridge(args):
         journaling_engine = None
         logger.warning(f"Trade journaling not available: {e}")
     
+    # Institutional Event Logging System (Tier 1: Measurement & Auditability)
+    try:
+        from event_log import (
+            get_event_system,
+            record_trade_for_tca,
+            reconcile_positions,
+            InstitutionalEventSystem
+        )
+        event_system = get_event_system()
+        EVENT_SYSTEM_AVAILABLE = True
+        logger.info(f"Institutional event system started - TCA, reconciliation, unified logging enabled")
+    except ImportError as e:
+        EVENT_SYSTEM_AVAILABLE = False
+        event_system = None
+        logger.warning(f"Event logging system not available: {e}")
+    
     try:
         from phoenix_brain import phoenix_brain, TradingState
         PHOENIX_BRAIN_AVAILABLE = True
@@ -602,6 +618,7 @@ def run_mt5_bridge(args):
     logger.info(f"Advanced Knowledge - Calendar/Sentiment/CrossAsset: {ADVANCED_KNOWLEDGE_AVAILABLE}")
     logger.info(f"Adaptive Learning - Online/Offline: {ADAPTIVE_LEARNING_AVAILABLE}")
     logger.info(f"Trade Journaling - Uncertainty Governor: {TRADE_JOURNALING_AVAILABLE}")
+    logger.info(f"Institutional Event System - TCA/Reconciliation: {EVENT_SYSTEM_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread
@@ -766,6 +783,27 @@ def run_mt5_bridge(args):
                                         # Record trade entry for self-reflection
                                         reflection_engine.record_trade_entry(str(ticket), trade_data)
                                         
+                                        # Record trade for TCA (Tier 1: Measurement & Auditability)
+                                        if EVENT_SYSTEM_AVAILABLE and event_system:
+                                            try:
+                                                # Get actual fill price from broker if available
+                                                actual_fill_price = signal.entry_price  # Will be updated when fill confirmed
+                                                spread_at_entry = current_spread * point if 'point' in dir() else 0.0
+                                                
+                                                record_trade_for_tca(
+                                                    trade_id=str(ticket),
+                                                    symbol=symbol,
+                                                    direction=signal.direction.name,
+                                                    intended_price=signal.entry_price,
+                                                    actual_price=actual_fill_price,
+                                                    spread_at_entry=spread_at_entry,
+                                                    position_size=position_size,
+                                                    strategy=signal.strategy
+                                                )
+                                                logger.debug(f"[TCA] Recorded trade {ticket} for transaction cost analysis")
+                                            except Exception as e:
+                                                logger.warning(f"TCA recording error: {e}")
+                                        
                                         # Get pre-trade wisdom from past insights
                                         wisdom = reflection_engine.get_pre_trade_wisdom(symbol, signal.strategy, regime_name)
                                         if "No specific" not in wisdom:
@@ -796,6 +834,46 @@ def run_mt5_bridge(args):
                 
                 # Status update every 5 minutes
                 if (current_time - last_status_time).seconds >= 300:
+                    # Run position reconciliation (Tier 1: Measurement & Auditability)
+                    if EVENT_SYSTEM_AVAILABLE and event_system:
+                        try:
+                            # Build internal positions dict from executed_trades
+                            internal_positions = {}
+                            for trade in executed_trades:
+                                if trade.get('ticket'):
+                                    internal_positions[str(trade['ticket'])] = {
+                                        'symbol': trade['symbol'],
+                                        'direction': trade['direction'],
+                                        'volume': trade['volume'],
+                                        'entry_price': trade.get('entry_price', 0)
+                                    }
+                            
+                            # Build MT5 positions dict
+                            mt5_positions = {}
+                            for pos in open_positions:
+                                ticket = str(pos.get('ticket', pos.get('id', '')))
+                                mt5_positions[ticket] = {
+                                    'symbol': pos.get('symbol', ''),
+                                    'direction': 'LONG' if pos.get('type', 0) == 0 else 'SHORT',
+                                    'volume': pos.get('volume', 0),
+                                    'entry_price': pos.get('price_open', 0)
+                                }
+                            
+                            # Run reconciliation
+                            recon_result = reconcile_positions(
+                                internal_positions=internal_positions,
+                                internal_balance=account_balance,
+                                mt5_positions=mt5_positions,
+                                mt5_balance=account_balance
+                            )
+                            
+                            if not recon_result.get('is_synced', True):
+                                logger.warning(f"[RECONCILIATION] Position mismatch detected: {recon_result.get('position_mismatches', [])}")
+                            else:
+                                logger.debug(f"[RECONCILIATION] Positions synced - {len(mt5_positions)} positions")
+                        except Exception as e:
+                            logger.warning(f"Reconciliation error: {e}")
+                    
                     print("\n" + "=" * 60)
                     print(f"PHOENIX TRADING SYSTEM - {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     print("=" * 60)
@@ -834,6 +912,27 @@ def run_mt5_bridge(args):
                     if VECTOR_MEMORY_AVAILABLE and vector_memory:
                         stats = vector_memory.get_statistics()
                         print(f"  Experiences Stored: {stats.get('total_experiences', 0)}")
+                    
+                    # Tier 1: Measurement & Auditability status
+                    if EVENT_SYSTEM_AVAILABLE and event_system:
+                        print("-" * 60)
+                        print("TIER 1 - MEASUREMENT & AUDITABILITY:")
+                        try:
+                            # Get TCA metrics
+                            tca_stats = event_system.tca.get_slippage_stats()
+                            print(f"  TCA Trades Tracked: {tca_stats.get('total_trades', 0)}")
+                            print(f"  Avg Slippage: {tca_stats.get('avg_slippage_pips', 0):.2f} pips")
+                            print(f"  Total Slippage Cost: ${tca_stats.get('total_slippage_cost', 0):.2f}")
+                            
+                            # Get event log stats
+                            recent_cycles = event_system.event_logger.get_recent_cycles(limit=100)
+                            print(f"  Decision Cycles Logged: {len(recent_cycles)}")
+                            
+                            # Get reconciliation status
+                            print(f"  Last Reconciliation: OK" if not recon_result or recon_result.get('is_synced', True) else f"  Last Reconciliation: MISMATCH")
+                        except Exception as e:
+                            print(f"  Event System Error: {e}")
+                    
                     print("=" * 60 + "\n")
                     
                     last_status_time = current_time
