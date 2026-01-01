@@ -2,11 +2,11 @@
 //|                                            TradingBridgeEA.mq5   |
 //|                                    AI Trading System Bridge      |
 //|                                  Connects to AWS Trading Brain   |
-//|                          v2.0 - With Live Market Data Feed       |
+//|                          v3.0 - With Trailing/BE/Partial Close   |
 //+------------------------------------------------------------------+
 #property copyright "AI Trading System"
 #property link      ""
-#property version   "2.00"
+#property version   "3.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -19,12 +19,34 @@ input bool     ENABLE_TRADING = true;
 input int      BARS_TO_SEND = 200;
 input string   SYMBOLS_TO_TRACK = "EURUSD,GBPUSD,USDJPY,USDCHF,AUDUSD,USDCAD,NZDUSD,EURGBP";
 
+// Trade Management Inputs
+input bool     ENABLE_BREAKEVEN = true;        // Enable break-even logic
+input double   BE_TRIGGER_PIPS = 15;           // Pips profit to trigger break-even
+input double   BE_OFFSET_PIPS = 2;             // Pips above entry for BE (to cover spread)
+input bool     ENABLE_TRAILING = true;         // Enable trailing stop
+input double   TRAIL_START_PIPS = 20;          // Pips profit to start trailing
+input double   TRAIL_DISTANCE_PIPS = 15;       // Trail distance in pips
+input bool     ENABLE_PARTIAL_CLOSE = true;    // Enable partial close at 1:1 RR
+input double   PARTIAL_CLOSE_PERCENT = 50;     // Percent to close at 1:1 RR
+
 CTrade trade;
 string lastSignalId = "";
 datetime lastBarTime[];
 datetime lastDealTime = 0;
 bool initialDataSent = false;
 string symbolsArray[];
+
+// Position management tracking
+struct PositionState {
+   ulong ticket;
+   bool breakEvenApplied;
+   bool partialClosed;
+   double originalSL;
+   double originalTP;
+   double entryPrice;
+};
+PositionState positionStates[];
+int positionStateCount = 0;
 
 int OnInit()
 {
@@ -34,6 +56,8 @@ int OnInit()
    
    StringSplit(SYMBOLS_TO_TRACK, ',', symbolsArray);
    ArrayResize(lastBarTime, ArraySize(symbolsArray));
+   ArrayResize(positionStates, 50);  // Pre-allocate for up to 50 positions
+   positionStateCount = 0;
    
    for(int i = 0; i < ArraySize(symbolsArray); i++)
    {
@@ -45,7 +69,8 @@ int OnInit()
       lastBarTime[i] = 0;
    }
    
-   Print("TradingBridgeEA v2.0 initialized - Tracking ", ArraySize(symbolsArray), " symbols");
+   Print("TradingBridgeEA v3.0 initialized - Tracking ", ArraySize(symbolsArray), " symbols");
+   Print("Trade Management: BE=", ENABLE_BREAKEVEN, " Trail=", ENABLE_TRAILING, " Partial=", ENABLE_PARTIAL_CLOSE);
    RegisterWithAPI();
    EventSetTimer(POLL_INTERVAL);
    return(INIT_SUCCEEDED);
@@ -58,6 +83,7 @@ void OnTimer()
    SendMarketData();
    SendClosedTrades();
    PollForSignals();
+   ManageOpenPositions();  // Trailing stop, break-even, partial close
    SendPositionUpdates();
 }
 void OnTick() {}
@@ -402,6 +428,220 @@ void SendPositionUpdates()
    StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
    ArrayResize(data, StringLen(jsonBody));
    WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
+}
+
+//+------------------------------------------------------------------+
+//| Position Management Functions - Trailing, Break-Even, Partial   |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+   int total = PositionsTotal();
+   
+   // Clean up states for closed positions
+   CleanupPositionStates();
+   
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      
+      // Only manage our positions
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(magic != 0 && magic != MAGIC_NUMBER) continue;
+      
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      
+      // Get symbol info
+      double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      long stopLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+      long freezeLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+      double minDist = MathMax(stopLevel, freezeLevel) * point;
+      double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      
+      // Get or create position state
+      int stateIdx = GetPositionStateIndex(ticket);
+      if(stateIdx < 0)
+      {
+         stateIdx = AddPositionState(ticket, entryPrice, currentSL, currentTP);
+         if(stateIdx < 0) continue;
+      }
+      
+      // Calculate profit in pips
+      double profitPips = 0;
+      if(posType == POSITION_TYPE_BUY)
+         profitPips = (currentPrice - entryPrice) / point;
+      else
+         profitPips = (entryPrice - currentPrice) / point;
+      
+      // 1. Break-Even Logic
+      if(ENABLE_BREAKEVEN && !positionStates[stateIdx].breakEvenApplied && profitPips >= BE_TRIGGER_PIPS * 10)
+      {
+         double newSL = 0;
+         if(posType == POSITION_TYPE_BUY)
+            newSL = NormalizeDouble(entryPrice + BE_OFFSET_PIPS * 10 * point, digits);
+         else
+            newSL = NormalizeDouble(entryPrice - BE_OFFSET_PIPS * 10 * point, digits);
+         
+         // Only modify if new SL is better than current
+         bool shouldModify = false;
+         if(posType == POSITION_TYPE_BUY && (currentSL == 0 || newSL > currentSL))
+            shouldModify = true;
+         else if(posType == POSITION_TYPE_SELL && (currentSL == 0 || newSL < currentSL))
+            shouldModify = true;
+         
+         if(shouldModify && IsValidStopLevel(symbol, posType, newSL, currentPrice, minDist))
+         {
+            if(trade.PositionModify(ticket, newSL, currentTP))
+            {
+               positionStates[stateIdx].breakEvenApplied = true;
+               Print("Break-even applied for ticket ", ticket, " - new SL: ", newSL);
+            }
+         }
+      }
+      
+      // 2. Partial Close at 1:1 RR
+      if(ENABLE_PARTIAL_CLOSE && !positionStates[stateIdx].partialClosed && currentTP > 0)
+      {
+         double riskPips = 0;
+         if(posType == POSITION_TYPE_BUY)
+            riskPips = (entryPrice - positionStates[stateIdx].originalSL) / point;
+         else
+            riskPips = (positionStates[stateIdx].originalSL - entryPrice) / point;
+         
+         // Check if we've reached 1:1 RR (profit >= risk)
+         if(riskPips > 0 && profitPips >= riskPips)
+         {
+            double closeVolume = NormalizeVolume(volume * PARTIAL_CLOSE_PERCENT / 100.0, minLot, lotStep);
+            double remainingVolume = volume - closeVolume;
+            
+            // Only partial close if both close and remaining volumes are valid
+            if(closeVolume >= minLot && remainingVolume >= minLot)
+            {
+               if(trade.PositionClosePartial(ticket, closeVolume))
+               {
+                  positionStates[stateIdx].partialClosed = true;
+                  Print("Partial close (", PARTIAL_CLOSE_PERCENT, "%) for ticket ", ticket, " - closed ", closeVolume, " lots");
+               }
+            }
+            else if(closeVolume >= minLot && remainingVolume < minLot)
+            {
+               // Can't partial close without going below min lot - mark as done to avoid repeated attempts
+               positionStates[stateIdx].partialClosed = true;
+               Print("Partial close skipped for ticket ", ticket, " - remaining volume would be below min lot");
+            }
+         }
+      }
+      
+      // 3. Trailing Stop
+      if(ENABLE_TRAILING && profitPips >= TRAIL_START_PIPS * 10)
+      {
+         double newSL = 0;
+         if(posType == POSITION_TYPE_BUY)
+            newSL = NormalizeDouble(currentPrice - TRAIL_DISTANCE_PIPS * 10 * point, digits);
+         else
+            newSL = NormalizeDouble(currentPrice + TRAIL_DISTANCE_PIPS * 10 * point, digits);
+         
+         // Only trail if new SL is better than current (tighter)
+         bool shouldTrail = false;
+         double minImprovement = 5 * point;  // Minimum 0.5 pip improvement to avoid spam
+         
+         if(posType == POSITION_TYPE_BUY && (currentSL == 0 || newSL > currentSL + minImprovement))
+            shouldTrail = true;
+         else if(posType == POSITION_TYPE_SELL && (currentSL == 0 || newSL < currentSL - minImprovement))
+            shouldTrail = true;
+         
+         if(shouldTrail && IsValidStopLevel(symbol, posType, newSL, currentPrice, minDist))
+         {
+            if(trade.PositionModify(ticket, newSL, currentTP))
+               Print("Trailing stop updated for ticket ", ticket, " - new SL: ", newSL);
+         }
+      }
+   }
+}
+
+int GetPositionStateIndex(ulong ticket)
+{
+   for(int i = 0; i < positionStateCount; i++)
+   {
+      if(positionStates[i].ticket == ticket)
+         return i;
+   }
+   return -1;
+}
+
+int AddPositionState(ulong ticket, double entryPrice, double sl, double tp)
+{
+   if(positionStateCount >= ArraySize(positionStates))
+   {
+      ArrayResize(positionStates, positionStateCount + 10);
+   }
+   
+   positionStates[positionStateCount].ticket = ticket;
+   positionStates[positionStateCount].breakEvenApplied = false;
+   positionStates[positionStateCount].partialClosed = false;
+   positionStates[positionStateCount].originalSL = sl;
+   positionStates[positionStateCount].originalTP = tp;
+   positionStates[positionStateCount].entryPrice = entryPrice;
+   
+   positionStateCount++;
+   return positionStateCount - 1;
+}
+
+void CleanupPositionStates()
+{
+   // Remove states for positions that no longer exist
+   for(int i = positionStateCount - 1; i >= 0; i--)
+   {
+      bool found = false;
+      for(int j = 0; j < PositionsTotal(); j++)
+      {
+         if(PositionGetTicket(j) == positionStates[i].ticket)
+         {
+            found = true;
+            break;
+         }
+      }
+      
+      if(!found)
+      {
+         // Remove this state by shifting remaining elements
+         for(int k = i; k < positionStateCount - 1; k++)
+         {
+            positionStates[k] = positionStates[k + 1];
+         }
+         positionStateCount--;
+      }
+   }
+}
+
+bool IsValidStopLevel(string symbol, ENUM_POSITION_TYPE posType, double sl, double currentPrice, double minDist)
+{
+   if(sl <= 0) return false;
+   
+   double distance = 0;
+   if(posType == POSITION_TYPE_BUY)
+      distance = currentPrice - sl;
+   else
+      distance = sl - currentPrice;
+   
+   return distance >= minDist;
+}
+
+double NormalizeVolume(double volume, double minLot, double lotStep)
+{
+   // Round down to nearest lot step
+   double normalized = MathFloor(volume / lotStep) * lotStep;
+   if(normalized < minLot) return 0;
+   return normalized;
 }
 
 string ExtractJsonString(string json, string key)
