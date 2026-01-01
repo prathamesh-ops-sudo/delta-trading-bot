@@ -31,6 +31,12 @@ except ImportError:
     BEDROCK_AVAILABLE = False
     bedrock_ai = None
 
+try:
+    from trade_gating import get_trade_gating, TradeGatingSystem
+    TRADE_GATING_AVAILABLE = True
+except ImportError:
+    TRADE_GATING_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -510,24 +516,38 @@ class VeteranTraderDecisionEngine:
         self.pattern_miner = pattern_miner if PATTERN_MINER_AVAILABLE else None
         self.bedrock_ai = bedrock_ai if BEDROCK_AVAILABLE else None
         
+        # Trade gating system for cost-aware filtering
+        self.trade_gating = get_trade_gating() if TRADE_GATING_AVAILABLE else None
+        
         # Decision thresholds
         self.min_confidence = 0.55
         self.min_rr_ratio = 1.5
         
-        # Strategy weights (updated by agentic system)
+        # SIMPLIFIED STRATEGY STACK: Focus on 2 proven strategies
+        # Session breakout (trend_following during London/NY) and mean reversion with news filter
         self.strategy_weights = {
-            'trend_following': 0.3,
-            'mean_reversion': 0.25,
-            'fvg_entry': 0.25,
-            'liquidity_sweep': 0.2,
-            'pattern_based': 0.2
+            'session_breakout': 0.5,   # Primary: London/NY session breakout
+            'mean_reversion': 0.5,     # Secondary: Mean reversion with news filter
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
+        # Per-strategy expectancy tracking
+        self.strategy_stats = {
+            'session_breakout': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
+            'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
+        }
+        
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
-                       account_balance: float) -> Optional[TradingSignal]:
-        """Comprehensive market analysis like a veteran trader"""
+                       account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
+        """Comprehensive market analysis like a veteran trader
+        
+        Args:
+            symbol: Trading pair (e.g., 'EURUSD')
+            mtf_data: Multi-timeframe OHLC data
+            account_balance: Current account balance
+            spread_pips: Current spread in pips (from real market data)
+        """
         
         # Get primary timeframe data (H1 for analysis)
         primary_tf = 'H1'
@@ -709,34 +729,42 @@ class VeteranTraderDecisionEngine:
         # Ensure minimum lot size of 0.01 and maximum of 1.0 for $100 account
         position_size = max(0.01, min(position_size, 1.0))
         
-        # 12. COST-AWARE EDGE GATE - Reject trades where expected edge < costs
-        # This is critical for profitability - don't take marginal trades
-        spread_cost_pips = 2.0  # Typical spread for majors (will be updated from real data)
-        slippage_buffer_pips = 1.0  # Expected slippage
-        total_cost_pips = spread_cost_pips + slippage_buffer_pips
-        
-        # Expected edge = (TP distance in pips * win_rate) - (SL distance in pips * loss_rate)
-        # Simplified: expected_move = confidence * tp_pips - (1-confidence) * sl_pips
+        # 12. COST-AWARE TRADE GATING - Use TradeGatingSystem for comprehensive filtering
+        # This checks: spread, session (London/NY), news blackouts, edge requirements, drawdown
         tp_pips = tp_distance / pip_size
-        sl_pips_calc = sl_distance / pip_size
-        expected_edge_pips = (confidence * tp_pips) - ((1 - confidence) * sl_pips_calc)
+        expected_profit_pips = tp_pips * confidence  # Expected profit adjusted for win probability
         
-        # Require edge to be at least 2x the cost (spread + slippage)
-        min_edge_multiplier = 2.0
-        required_edge = total_cost_pips * min_edge_multiplier
-        
-        if expected_edge_pips < required_edge:
-            logger.debug(f"[EDGE GATE] {symbol} rejected: expected_edge={expected_edge_pips:.1f} pips < required={required_edge:.1f} pips")
-            return None
-        
-        # Also check if we're in a high-liquidity session (London/NY overlap is best)
-        current_hour = datetime.now().hour
-        is_high_liquidity = 8 <= current_hour <= 16  # London session (UTC)
-        
-        # Require higher edge outside high-liquidity sessions
-        if not is_high_liquidity and expected_edge_pips < required_edge * 1.5:
-            logger.debug(f"[EDGE GATE] {symbol} rejected: low liquidity session requires higher edge")
-            return None
+        if self.trade_gating:
+            # Update peak balance for drawdown tracking
+            self.trade_gating.update_peak_balance(account_balance)
+            
+            # Run all gates with real spread data
+            gates_passed, gate_results = self.trade_gating.check_all(
+                symbol=symbol,
+                spread_pips=spread_pips,
+                expected_profit_pips=expected_profit_pips,
+                confidence=confidence,
+                current_balance=account_balance
+            )
+            
+            if not gates_passed:
+                # Log which gates failed
+                failed_gates = [r for r in gate_results if not r.allowed]
+                for gate in failed_gates:
+                    logger.info(f"[TRADE GATE] {symbol} rejected by {gate.gate_type}: {gate.reason}")
+                return None
+            
+            # Log gate summary for successful trades
+            logger.debug(f"[TRADE GATE] {symbol} passed: {self.trade_gating.get_gate_summary(gate_results)}")
+        else:
+            # Fallback: basic edge check if trade gating not available
+            slippage_buffer_pips = 0.5
+            total_cost_pips = spread_pips + slippage_buffer_pips
+            required_edge = total_cost_pips * 2.0
+            
+            if expected_profit_pips < required_edge:
+                logger.debug(f"[EDGE GATE] {symbol} rejected: expected_edge={expected_profit_pips:.1f} pips < required={required_edge:.1f} pips")
+                return None
         
         # 13. Determine trailing stop
         trailing_enabled = confidence > 0.7 and adx_value > 30
@@ -1031,6 +1059,51 @@ class VeteranTraderDecisionEngine:
             except Exception as e:
                 logger.error(f"Pattern learning error: {e}")
         return []
+    
+    def update_strategy_stats(self, strategy: str, profit_pips: float, was_win: bool):
+        """Update per-strategy expectancy tracking
+        
+        Args:
+            strategy: Strategy name (e.g., 'session_breakout', 'mean_reversion')
+            profit_pips: Profit/loss in pips (positive for profit, negative for loss)
+            was_win: Whether the trade was profitable
+        """
+        if strategy not in self.strategy_stats:
+            self.strategy_stats[strategy] = {'trades': 0, 'wins': 0, 'total_pips': 0.0}
+        
+        stats = self.strategy_stats[strategy]
+        stats['trades'] += 1
+        stats['total_pips'] += profit_pips
+        if was_win:
+            stats['wins'] += 1
+        
+        # Calculate expectancy
+        if stats['trades'] > 0:
+            win_rate = stats['wins'] / stats['trades']
+            avg_pips = stats['total_pips'] / stats['trades']
+            logger.info(f"[STRATEGY STATS] {strategy}: trades={stats['trades']}, "
+                       f"win_rate={win_rate:.1%}, avg_pips={avg_pips:.1f}, "
+                       f"total_pips={stats['total_pips']:.1f}")
+    
+    def get_strategy_expectancy(self, strategy: str) -> Dict[str, float]:
+        """Get expectancy metrics for a strategy"""
+        if strategy not in self.strategy_stats:
+            return {'trades': 0, 'win_rate': 0.0, 'avg_pips': 0.0, 'expectancy': 0.0}
+        
+        stats = self.strategy_stats[strategy]
+        trades = stats['trades']
+        if trades == 0:
+            return {'trades': 0, 'win_rate': 0.0, 'avg_pips': 0.0, 'expectancy': 0.0}
+        
+        win_rate = stats['wins'] / trades
+        avg_pips = stats['total_pips'] / trades
+        
+        return {
+            'trades': trades,
+            'win_rate': win_rate,
+            'avg_pips': avg_pips,
+            'expectancy': avg_pips  # Simplified: average pips per trade
+        }
     
     def should_exit_trade(self, signal: TradingSignal, current_price: float,
                           current_profit_pips: float) -> Tuple[bool, str]:
