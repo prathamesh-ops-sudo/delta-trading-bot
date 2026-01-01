@@ -385,6 +385,9 @@ def receive_market_data():
     symbols_data = data.get('symbols', [])
     is_initial = data.get('initial', False)
     
+    # Track which symbols need full history resync
+    symbols_needing_resync = []
+    
     for sym_data in symbols_data:
         symbol = sym_data.get('symbol', '')
         if not symbol:
@@ -406,11 +409,26 @@ def receive_market_data():
         
         bars = sym_data.get('bars', [])
         bridge_state.market_data.update(symbol, quote_data, bars)
+        
+        # Check if we need more bars for this symbol (less than 50 bars = need resync)
+        current_bar_count = len(bridge_state.market_data.get_bars(symbol, 500))
+        if current_bar_count < 50:
+            symbols_needing_resync.append(symbol)
     
     if is_initial:
         logger.info(f"Initial market data received for {len(symbols_data)} symbols")
     
-    return jsonify({'status': 'ok', 'symbols_updated': len(symbols_data)})
+    # Tell EA to resend full history if we're missing bars
+    need_resync = len(symbols_needing_resync) > 0
+    if need_resync and not is_initial:
+        logger.warning(f"Requesting bar resync for {len(symbols_needing_resync)} symbols: {symbols_needing_resync}")
+    
+    return jsonify({
+        'status': 'ok', 
+        'symbols_updated': len(symbols_data),
+        'need_full_history': need_resync,
+        'symbols_needing_resync': symbols_needing_resync
+    })
 
 
 @app.route('/api/market_data', methods=['GET'])

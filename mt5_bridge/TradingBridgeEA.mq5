@@ -11,7 +11,7 @@
 
 #include <Trade\Trade.mqh>
 
-input string   API_URL = "http://3.234.141.231:5000";
+input string   API_URL = "http://44.213.171.246:5000";
 input int      POLL_INTERVAL = 5;
 input int      MAGIC_NUMBER = 123456;
 input double   MAX_SLIPPAGE = 20;
@@ -151,7 +151,19 @@ void SendMarketData()
    StringToCharArray(jsonBody, data, 0, StringLen(jsonBody));
    ArrayResize(data, StringLen(jsonBody));
    int res = WebRequest("POST", url, headers, 10000, data, result, resultHeaders);
-   if(res != -1 && !initialDataSent) { Print("Initial market data sent"); initialDataSent = true; }
+   if(res != -1)
+   {
+      if(!initialDataSent) { Print("Initial market data sent"); initialDataSent = true; }
+      
+      // Check if server needs full history resync (e.g., after server restart)
+      string response = CharArrayToString(result);
+      if(StringFind(response, "\"need_full_history\":true") >= 0)
+      {
+         Print("Server requested full history resync - resending initial data");
+         initialDataSent = false;  // Reset to trigger full resend on next tick
+         for(int j = 0; j < ArraySize(lastBarTime); j++) lastBarTime[j] = 0;
+      }
+   }
 }
 
 void SendClosedTrades()
