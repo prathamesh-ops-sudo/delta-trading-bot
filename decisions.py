@@ -37,6 +37,13 @@ try:
 except ImportError:
     TRADE_GATING_AVAILABLE = False
 
+try:
+    from data import MacroDataFetcher
+    MACRO_DATA_AVAILABLE = True
+except ImportError:
+    MACRO_DATA_AVAILABLE = False
+    MacroDataFetcher = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -519,9 +526,16 @@ class VeteranTraderDecisionEngine:
         # Trade gating system for cost-aware filtering
         self.trade_gating = get_trade_gating() if TRADE_GATING_AVAILABLE else None
         
-        # Decision thresholds
-        self.min_confidence = 0.55
-        self.min_rr_ratio = 1.5
+        # Macro data fetcher for DXY, VIX, Treasury yields
+        self.macro_fetcher = MacroDataFetcher() if MACRO_DATA_AVAILABLE else None
+        self._last_macro_update = None
+        self._cached_macro_regime = None
+        
+        # Decision thresholds - INCREASED for higher-quality trades
+        # Most retail forex systems lose money by overtrading
+        # Better to take fewer, higher-quality trades with clear edge
+        self.min_confidence = 0.70  # Increased from 0.55 to reduce trade frequency
+        self.min_rr_ratio = 2.0     # Increased from 1.5 for better risk/reward
         
         # SIMPLIFIED STRATEGY STACK: Focus on 2 proven strategies
         # Session breakout (trend_following during London/NY) and mean reversion with news filter
@@ -536,7 +550,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -563,6 +577,49 @@ class VeteranTraderDecisionEngine:
         
         # 1. Get regime context
         regime = regime_manager.detect_regime(df)
+        
+        # 1.5 Get macro regime (DXY, VIX, Treasury yields) - updates every 5 minutes
+        macro_regime = None
+        macro_confidence_adjustment = 1.0
+        if self.macro_fetcher:
+            try:
+                now = datetime.now()
+                if self._last_macro_update is None or (now - self._last_macro_update).total_seconds() > 300:
+                    self._cached_macro_regime = self.macro_fetcher.get_market_regime()
+                    self._last_macro_update = now
+                    logger.info(f"Macro regime updated: {self._cached_macro_regime}")
+                
+                macro_regime = self._cached_macro_regime
+                
+                if macro_regime:
+                    # Adjust confidence based on macro alignment with trade direction
+                    # Risk-on favors AUD, NZD; Risk-off favors JPY, CHF, USD
+                    risk_currencies = {'AUD', 'NZD', 'CAD'}
+                    safe_currencies = {'JPY', 'CHF'}
+                    
+                    base_curr = symbol[:3]
+                    quote_curr = symbol[3:]
+                    
+                    if macro_regime.get('regime') == 'risk_on':
+                        if base_curr in risk_currencies or quote_curr in safe_currencies:
+                            macro_confidence_adjustment = 1.15  # Boost confidence for risk-on trades
+                        elif base_curr in safe_currencies or quote_curr in risk_currencies:
+                            macro_confidence_adjustment = 0.85  # Reduce confidence for counter-trend
+                    elif macro_regime.get('regime') == 'risk_off':
+                        if base_curr in safe_currencies or quote_curr in risk_currencies:
+                            macro_confidence_adjustment = 1.15  # Boost confidence for safe haven trades
+                        elif base_curr in risk_currencies or quote_curr in safe_currencies:
+                            macro_confidence_adjustment = 0.85  # Reduce confidence for counter-trend
+                    
+                    # VIX extreme levels affect all trades
+                    if macro_regime.get('vix_level') == 'extreme':
+                        macro_confidence_adjustment *= 0.7  # Reduce all trade confidence in panic
+                    elif macro_regime.get('vix_level') == 'high':
+                        macro_confidence_adjustment *= 0.85  # Cautious in high VIX
+                    
+                    logger.debug(f"Macro adjustment for {symbol}: {macro_confidence_adjustment:.2f}")
+            except Exception as e:
+                logger.warning(f"Macro regime error: {e}")
         
         # 2. Multi-timeframe bias
         mtf_bias, mtf_alignment = self.mtf_analyzer.analyze_bias(mtf_data)
@@ -682,6 +739,10 @@ class VeteranTraderDecisionEngine:
         confidence = self._calculate_final_confidence(
             base_confidence, mtf_alignment, regime, adx_value, rsi
         )
+        
+        # Apply macro regime adjustment (DXY, VIX, Treasury yields)
+        confidence *= macro_confidence_adjustment
+        confidence = min(confidence, 0.95)  # Cap at 95%
         
         if confidence < self.min_confidence:
             return None

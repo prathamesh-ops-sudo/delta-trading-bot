@@ -617,6 +617,242 @@ class NewsDataFetcher:
         return (pos_count - neg_count) / total
 
 
+class MacroDataFetcher:
+    """Fetches macro indicators: DXY, VIX, Treasury yields as whale activity proxies"""
+    
+    def __init__(self):
+        self.available = YFINANCE_AVAILABLE
+        self._cache = {}
+        self._cache_ttl = 300  # 5 minutes cache
+        
+        # Yahoo Finance symbols for macro indicators
+        self.symbols = {
+            'DXY': 'DX-Y.NYB',      # US Dollar Index
+            'VIX': '^VIX',           # CBOE Volatility Index
+            'TNX': '^TNX',           # 10-Year Treasury Yield
+            'IRX': '^IRX',           # 13-Week Treasury Bill
+            'TYX': '^TYX',           # 30-Year Treasury Yield
+            'FVX': '^FVX',           # 5-Year Treasury Yield
+        }
+    
+    def _get_cached(self, key: str) -> Optional[Dict]:
+        """Get cached data if still valid"""
+        if key in self._cache:
+            data, timestamp = self._cache[key]
+            if (datetime.now() - timestamp).total_seconds() < self._cache_ttl:
+                return data
+        return None
+    
+    def _set_cache(self, key: str, data: Dict):
+        """Cache data with timestamp"""
+        self._cache[key] = (data, datetime.now())
+    
+    def get_dxy(self) -> Dict:
+        """Get US Dollar Index (DXY) data - measures USD strength"""
+        cached = self._get_cached('dxy')
+        if cached:
+            return cached
+        
+        if not self.available:
+            return {'value': None, 'change': None, 'change_pct': None, 'trend': 'unknown'}
+        
+        try:
+            ticker = yf.Ticker(self.symbols['DXY'])
+            hist = ticker.history(period='5d', interval='1h')
+            
+            if hist.empty:
+                return {'value': None, 'change': None, 'change_pct': None, 'trend': 'unknown'}
+            
+            current = hist['Close'].iloc[-1]
+            prev_day = hist['Close'].iloc[-24] if len(hist) > 24 else hist['Close'].iloc[0]
+            change = current - prev_day
+            change_pct = (change / prev_day) * 100
+            
+            # Determine trend
+            if change_pct > 0.1:
+                trend = 'bullish_usd'
+            elif change_pct < -0.1:
+                trend = 'bearish_usd'
+            else:
+                trend = 'neutral'
+            
+            result = {
+                'value': round(current, 3),
+                'change': round(change, 3),
+                'change_pct': round(change_pct, 3),
+                'trend': trend,
+                'interpretation': 'Strong USD' if trend == 'bullish_usd' else ('Weak USD' if trend == 'bearish_usd' else 'Stable USD')
+            }
+            self._set_cache('dxy', result)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fetching DXY: {e}")
+            return {'value': None, 'change': None, 'change_pct': None, 'trend': 'unknown'}
+    
+    def get_vix(self) -> Dict:
+        """Get VIX (fear index) - measures market risk sentiment"""
+        cached = self._get_cached('vix')
+        if cached:
+            return cached
+        
+        if not self.available:
+            return {'value': None, 'level': 'unknown', 'risk_sentiment': 'unknown'}
+        
+        try:
+            ticker = yf.Ticker(self.symbols['VIX'])
+            hist = ticker.history(period='5d', interval='1h')
+            
+            if hist.empty:
+                return {'value': None, 'level': 'unknown', 'risk_sentiment': 'unknown'}
+            
+            current = hist['Close'].iloc[-1]
+            prev_day = hist['Close'].iloc[-24] if len(hist) > 24 else hist['Close'].iloc[0]
+            change = current - prev_day
+            
+            # VIX levels interpretation
+            if current < 12:
+                level = 'very_low'
+                risk_sentiment = 'extreme_greed'
+            elif current < 20:
+                level = 'low'
+                risk_sentiment = 'risk_on'
+            elif current < 30:
+                level = 'moderate'
+                risk_sentiment = 'cautious'
+            elif current < 40:
+                level = 'high'
+                risk_sentiment = 'risk_off'
+            else:
+                level = 'extreme'
+                risk_sentiment = 'panic'
+            
+            result = {
+                'value': round(current, 2),
+                'change': round(change, 2),
+                'level': level,
+                'risk_sentiment': risk_sentiment,
+                'interpretation': f"VIX at {current:.1f} indicates {risk_sentiment.replace('_', ' ')}"
+            }
+            self._set_cache('vix', result)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fetching VIX: {e}")
+            return {'value': None, 'level': 'unknown', 'risk_sentiment': 'unknown'}
+    
+    def get_treasury_yields(self) -> Dict:
+        """Get Treasury yields and calculate 2Y/10Y spread (yield curve)"""
+        cached = self._get_cached('treasury')
+        if cached:
+            return cached
+        
+        if not self.available:
+            return {'spread_2y10y': None, 'yield_10y': None, 'curve_status': 'unknown'}
+        
+        try:
+            # Get 10-year yield
+            tnx = yf.Ticker(self.symbols['TNX'])
+            tnx_hist = tnx.history(period='5d', interval='1d')
+            
+            # Get 5-year yield (proxy for 2-year since ^IRX is 13-week)
+            fvx = yf.Ticker(self.symbols['FVX'])
+            fvx_hist = fvx.history(period='5d', interval='1d')
+            
+            if tnx_hist.empty or fvx_hist.empty:
+                return {'spread_2y10y': None, 'yield_10y': None, 'curve_status': 'unknown'}
+            
+            yield_10y = tnx_hist['Close'].iloc[-1]
+            yield_5y = fvx_hist['Close'].iloc[-1]
+            
+            # Calculate spread (using 5Y as proxy for 2Y)
+            spread = yield_10y - yield_5y
+            
+            # Yield curve interpretation
+            if spread < -0.5:
+                curve_status = 'deeply_inverted'
+                interpretation = 'Recession signal - risk off'
+            elif spread < 0:
+                curve_status = 'inverted'
+                interpretation = 'Economic slowdown expected'
+            elif spread < 0.5:
+                curve_status = 'flat'
+                interpretation = 'Economic uncertainty'
+            else:
+                curve_status = 'normal'
+                interpretation = 'Healthy economic outlook'
+            
+            result = {
+                'yield_10y': round(yield_10y, 3),
+                'yield_5y': round(yield_5y, 3),
+                'spread_5y10y': round(spread, 3),
+                'curve_status': curve_status,
+                'interpretation': interpretation
+            }
+            self._set_cache('treasury', result)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fetching Treasury yields: {e}")
+            return {'spread_2y10y': None, 'yield_10y': None, 'curve_status': 'unknown'}
+    
+    def get_all_macro_data(self) -> Dict:
+        """Get all macro indicators in one call"""
+        return {
+            'dxy': self.get_dxy(),
+            'vix': self.get_vix(),
+            'treasury': self.get_treasury_yields(),
+            'timestamp': datetime.now().isoformat()
+        }
+    
+    def get_market_regime(self) -> Dict:
+        """Determine overall market regime from macro indicators"""
+        dxy = self.get_dxy()
+        vix = self.get_vix()
+        treasury = self.get_treasury_yields()
+        
+        # Score-based regime detection
+        risk_score = 0  # Positive = risk-on, Negative = risk-off
+        
+        # VIX contribution
+        if vix.get('level') == 'very_low':
+            risk_score += 2
+        elif vix.get('level') == 'low':
+            risk_score += 1
+        elif vix.get('level') == 'high':
+            risk_score -= 1
+        elif vix.get('level') == 'extreme':
+            risk_score -= 2
+        
+        # Yield curve contribution
+        if treasury.get('curve_status') == 'normal':
+            risk_score += 1
+        elif treasury.get('curve_status') == 'inverted':
+            risk_score -= 1
+        elif treasury.get('curve_status') == 'deeply_inverted':
+            risk_score -= 2
+        
+        # Determine regime
+        if risk_score >= 2:
+            regime = 'risk_on'
+            recommendation = 'Favor risk currencies (AUD, NZD) over safe havens (JPY, CHF)'
+        elif risk_score <= -2:
+            regime = 'risk_off'
+            recommendation = 'Favor safe havens (JPY, CHF, USD) over risk currencies'
+        else:
+            regime = 'neutral'
+            recommendation = 'Mixed signals - focus on technical setups'
+        
+        return {
+            'regime': regime,
+            'risk_score': risk_score,
+            'recommendation': recommendation,
+            'dxy_trend': dxy.get('trend', 'unknown'),
+            'vix_level': vix.get('level', 'unknown'),
+            'yield_curve': treasury.get('curve_status', 'unknown')
+        }
+
+
 class DataManager:
     """Main data manager coordinating all data sources"""
     
@@ -625,6 +861,7 @@ class DataManager:
         self.mt5 = MT5DataFetcher()
         self.yahoo = YahooFinanceDataFetcher()
         self.news = NewsDataFetcher()
+        self.macro = MacroDataFetcher()
         self._cache = {}
         self._cache_ttl = 60  # seconds
     

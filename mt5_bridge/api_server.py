@@ -592,6 +592,114 @@ def get_closed_trades():
     })
 
 
+@app.route('/api/dashboard', methods=['GET'])
+def get_dashboard():
+    """Get comprehensive dashboard data for web UI"""
+    from datetime import datetime
+    
+    # Account info
+    account = {
+        'balance': bridge_state.account_info.get('balance', 0),
+        'equity': bridge_state.account_info.get('equity', 0),
+        'margin': bridge_state.account_info.get('margin', 0),
+        'free_margin': bridge_state.account_info.get('free_margin', 0),
+        'margin_level': bridge_state.account_info.get('margin_level', 0),
+        'profit': bridge_state.account_info.get('profit', 0),
+    }
+    
+    # Calculate P&L
+    starting_balance = 100.0  # Initial deposit
+    total_pnl = account['balance'] - starting_balance
+    pnl_pct = (total_pnl / starting_balance) * 100 if starting_balance > 0 else 0
+    
+    # Positions
+    positions = bridge_state.positions.copy()
+    
+    # Recent signals (last 20)
+    recent_signals = []
+    for sig in list(bridge_state.executed_signals)[-20:]:
+        recent_signals.append({
+            'id': sig.id,
+            'symbol': sig.symbol,
+            'action': sig.action,
+            'volume': sig.volume,
+            'status': sig.status,
+            'result': sig.result,
+            'timestamp': sig.timestamp.isoformat() if hasattr(sig, 'timestamp') else None
+        })
+    
+    # Trade stats
+    trade_stats = bridge_state.closed_trades.get_stats()
+    
+    # System health
+    ea_connected = bridge_state.is_mt5_connected()
+    last_ea_poll = bridge_state.last_poll.isoformat() if bridge_state.last_poll else None
+    
+    # Market data freshness
+    market_data_symbols = bridge_state.market_data.get_all_symbols()
+    bars_fresh = len(market_data_symbols) > 0
+    
+    # Get realtime alerts status if available
+    alerts_status = {}
+    if realtime_alerts:
+        alerts_status = {
+            'ea_connected': ea_connected,
+            'last_ea_poll': last_ea_poll,
+            'bars_fresh': bars_fresh,
+            'consecutive_failures': realtime_alerts.consecutive_failures,
+        }
+    
+    # Token usage (NewsAPI.ai)
+    token_usage = {
+        'newsapi_tokens_used': 0,  # Would need to track this in knowledge_acquisition
+        'newsapi_tokens_total': 2000,
+        'newsapi_tokens_remaining': 2000,
+    }
+    
+    # Try to get actual token usage from knowledge acquisition
+    try:
+        import sys
+        sys.path.insert(0, '/home/ec2-user/forex_trading_system')
+        from knowledge_acquisition import knowledge_system
+        if hasattr(knowledge_system, 'newsapi_tokens_used'):
+            token_usage['newsapi_tokens_used'] = knowledge_system.newsapi_tokens_used
+            token_usage['newsapi_tokens_remaining'] = 2000 - knowledge_system.newsapi_tokens_used
+    except:
+        pass
+    
+    # Macro data (DXY, VIX, Treasury)
+    macro_data = {}
+    try:
+        from data import MacroDataFetcher
+        macro_fetcher = MacroDataFetcher()
+        macro_data = macro_fetcher.get_all_macro_data()
+    except:
+        macro_data = {'error': 'Macro data not available'}
+    
+    return jsonify({
+        'account': account,
+        'pnl': {
+            'total': round(total_pnl, 2),
+            'percent': round(pnl_pct, 2),
+            'starting_balance': starting_balance
+        },
+        'positions': positions,
+        'position_count': len(positions),
+        'recent_signals': recent_signals,
+        'trade_stats': trade_stats,
+        'health': {
+            'ea_connected': ea_connected,
+            'last_ea_poll': last_ea_poll,
+            'bars_fresh': bars_fresh,
+            'symbols_with_data': len(market_data_symbols),
+            'alerts': alerts_status
+        },
+        'token_usage': token_usage,
+        'macro_data': macro_data,
+        'timestamp': datetime.now().isoformat()
+    })
+
+
 # Trading system interface functions
 
 def send_trade_signal(symbol: str, action: str, volume: float, 
