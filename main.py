@@ -538,6 +538,19 @@ def run_mt5_bridge(args):
         knowledge_engine = None
         logger.warning(f"Knowledge acquisition not available: {e}")
     
+    # Advanced Knowledge - Economic Calendar, Topic Sentiment, Cross-Asset Regime
+    try:
+        from advanced_knowledge import get_advanced_knowledge
+        advanced_knowledge = get_advanced_knowledge()
+        ADVANCED_KNOWLEDGE_AVAILABLE = True
+        # Start background updates (every 15 minutes)
+        advanced_knowledge.start_background_updates(interval_minutes=15)
+        logger.info("Advanced knowledge engine started - Economic calendar, topic sentiment, cross-asset regime enabled")
+    except ImportError as e:
+        ADVANCED_KNOWLEDGE_AVAILABLE = False
+        advanced_knowledge = None
+        logger.warning(f"Advanced knowledge not available: {e}")
+    
     try:
         from phoenix_brain import phoenix_brain, TradingState
         PHOENIX_BRAIN_AVAILABLE = True
@@ -560,6 +573,7 @@ def run_mt5_bridge(args):
     
     logger.info(f"MT5 Bridge mode - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}")
     logger.info(f"Phoenix components - Knowledge: {KNOWLEDGE_ENGINE_AVAILABLE}, Brain: {PHOENIX_BRAIN_AVAILABLE}, Memory: {VECTOR_MEMORY_AVAILABLE}")
+    logger.info(f"Advanced Knowledge - Calendar/Sentiment/CrossAsset: {ADVANCED_KNOWLEDGE_AVAILABLE}")
     logger.info(f"Trading Captain initialized - Mode: {trading_captain.mode.value}")
     
     # Start the bridge API server in a background thread

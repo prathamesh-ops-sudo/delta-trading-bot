@@ -44,6 +44,20 @@ except ImportError:
     MACRO_DATA_AVAILABLE = False
     MacroDataFetcher = None
 
+try:
+    from advanced_knowledge import (
+        get_advanced_knowledge, 
+        get_trading_context,
+        should_avoid_trading as advanced_should_avoid,
+        AdvancedKnowledgeEngine
+    )
+    ADVANCED_KNOWLEDGE_AVAILABLE = True
+except ImportError:
+    ADVANCED_KNOWLEDGE_AVAILABLE = False
+    get_advanced_knowledge = None
+    get_trading_context = None
+    advanced_should_avoid = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -531,6 +545,11 @@ class VeteranTraderDecisionEngine:
         self._last_macro_update = None
         self._cached_macro_regime = None
         
+        # Advanced knowledge engine for economic calendar, topic sentiment, cross-asset regime
+        self.advanced_knowledge = get_advanced_knowledge() if ADVANCED_KNOWLEDGE_AVAILABLE else None
+        self._last_advanced_update = None
+        self._cached_trading_context = {}
+        
         # Decision thresholds - INCREASED for higher-quality trades
         # Most retail forex systems lose money by overtrading
         # Better to take fewer, higher-quality trades with clear edge
@@ -550,7 +569,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -620,6 +639,62 @@ class VeteranTraderDecisionEngine:
                     logger.debug(f"Macro adjustment for {symbol}: {macro_confidence_adjustment:.2f}")
             except Exception as e:
                 logger.warning(f"Macro regime error: {e}")
+        
+        # 1.6 Advanced Knowledge: Economic Calendar, Topic Sentiment, Cross-Asset Regime
+        advanced_context = None
+        advanced_confidence_adjustment = 1.0
+        should_skip_trade = False
+        skip_reason = ""
+        
+        if self.advanced_knowledge:
+            try:
+                now = datetime.now()
+                # Update trading context every 5 minutes
+                if (symbol not in self._cached_trading_context or 
+                    self._last_advanced_update is None or 
+                    (now - self._last_advanced_update).total_seconds() > 300):
+                    
+                    self._cached_trading_context[symbol] = self.advanced_knowledge.get_trading_context(symbol)
+                    self._last_advanced_update = now
+                    logger.info(f"Advanced knowledge updated for {symbol}: {self._cached_trading_context[symbol].get('direction')}, "
+                               f"confidence={self._cached_trading_context[symbol].get('confidence', 0):.2f}")
+                
+                advanced_context = self._cached_trading_context.get(symbol)
+                
+                if advanced_context:
+                    # Check if we should avoid trading (high-impact events, extreme volatility)
+                    if advanced_context.get('should_reduce_risk'):
+                        upcoming = advanced_context.get('upcoming_events', [])
+                        if upcoming:
+                            event_names = [e.get('name', 'Unknown') for e in upcoming[:2]]
+                            skip_reason = f"High-impact events upcoming: {', '.join(event_names)}"
+                            should_skip_trade = True
+                            logger.info(f"Skipping {symbol} trade: {skip_reason}")
+                    
+                    # Apply confidence adjustment based on advanced knowledge
+                    ak_confidence = advanced_context.get('confidence', 0.5)
+                    ak_direction = advanced_context.get('direction', 'NEUTRAL')
+                    
+                    # If advanced knowledge has strong conviction, adjust our confidence
+                    if ak_confidence > 0.6:
+                        advanced_confidence_adjustment = 1.0 + (ak_confidence - 0.5) * 0.3  # Up to 1.15x boost
+                    elif ak_confidence < 0.4:
+                        advanced_confidence_adjustment = 0.85  # Reduce confidence when uncertain
+                    
+                    # Log the analysis breakdown
+                    analysis = advanced_context.get('analysis', {})
+                    logger.debug(f"Advanced knowledge for {symbol}: "
+                                f"calendar_bias={analysis.get('calendar', {}).get('bias', 0):.2f}, "
+                                f"sentiment_bias={analysis.get('sentiment', {}).get('bias', 0):.2f}, "
+                                f"cross_asset_bias={analysis.get('cross_asset', {}).get('bias', 0):.2f}")
+                    
+            except Exception as e:
+                logger.warning(f"Advanced knowledge error for {symbol}: {e}")
+        
+        # Skip trade if high-impact events are imminent
+        if should_skip_trade:
+            logger.info(f"Trade blocked for {symbol}: {skip_reason}")
+            return None
         
         # 2. Multi-timeframe bias
         mtf_bias, mtf_alignment = self.mtf_analyzer.analyze_bias(mtf_data)
@@ -742,6 +817,10 @@ class VeteranTraderDecisionEngine:
         
         # Apply macro regime adjustment (DXY, VIX, Treasury yields)
         confidence *= macro_confidence_adjustment
+        
+        # Apply advanced knowledge adjustment (economic calendar, topic sentiment, cross-asset regime)
+        confidence *= advanced_confidence_adjustment
+        
         confidence = min(confidence, 0.95)  # Cap at 95%
         
         if confidence < self.min_confidence:
