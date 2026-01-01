@@ -140,6 +140,43 @@ except ImportError:
     is_shadow_mode = None
     process_shadow_signal = None
 
+# Priority 1: Risk-Adjusted Scoring (Buffett-style evaluation)
+try:
+    from risk_adjusted_scoring import (
+        get_risk_scorer,
+        record_trade_for_scoring,
+        get_current_score,
+        should_reduce_activity,
+        RiskAdjustedScorer,
+        TradeRecord,
+        PerformanceGrade
+    )
+    RISK_SCORING_AVAILABLE = True
+except ImportError:
+    RISK_SCORING_AVAILABLE = False
+    get_risk_scorer = None
+    should_reduce_activity = None
+
+# Priority 2: Capital Allocator (Buffett-style position sizing)
+try:
+    from capital_allocator import (
+        get_capital_allocator,
+        get_conviction_engine,
+        calculate_position_allocation,
+        update_portfolio,
+        should_take_trade as allocator_should_take,
+        CapitalAllocator,
+        ConvictionEngine,
+        PositionAllocation,
+        ConvictionScore
+    )
+    CAPITAL_ALLOCATOR_AVAILABLE = True
+except ImportError:
+    CAPITAL_ALLOCATOR_AVAILABLE = False
+    get_capital_allocator = None
+    calculate_position_allocation = None
+    allocator_should_take = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -647,6 +684,13 @@ class VeteranTraderDecisionEngine:
         # Research/production manager for shadow mode, experiments (Tier 3)
         self.research_production = get_research_production_manager() if RESEARCH_PRODUCTION_AVAILABLE else None
         
+        # Priority 1: Risk-adjusted scoring for Buffett-style evaluation
+        self.risk_scorer = get_risk_scorer() if RISK_SCORING_AVAILABLE else None
+        
+        # Priority 2: Capital allocator for Buffett-style position sizing
+        self.capital_allocator = get_capital_allocator() if CAPITAL_ALLOCATOR_AVAILABLE else None
+        self.conviction_engine = get_conviction_engine() if CAPITAL_ALLOCATOR_AVAILABLE else None
+        
         # Decision thresholds - INCREASED for higher-quality trades
         # Most retail forex systems lose money by overtrading
         # Better to take fewer, higher-quality trades with clear edge
@@ -666,7 +710,7 @@ class VeteranTraderDecisionEngine:
             'mean_reversion': {'trades': 0, 'wins': 0, 'total_pips': 0.0},
         }
         
-        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}, EventLog: {EVENT_LOG_AVAILABLE}, PortfolioRisk: {PORTFOLIO_RISK_AVAILABLE}, ResearchProduction: {RESEARCH_PRODUCTION_AVAILABLE}")
+        logger.info(f"Decision engine initialized - PatternMiner: {PATTERN_MINER_AVAILABLE}, BedrockAI: {BEDROCK_AVAILABLE}, TradeGating: {TRADE_GATING_AVAILABLE}, MacroData: {MACRO_DATA_AVAILABLE}, AdvancedKnowledge: {ADVANCED_KNOWLEDGE_AVAILABLE}, AdaptiveLearning: {ADAPTIVE_LEARNING_AVAILABLE}, TradeJournaling: {TRADE_JOURNALING_AVAILABLE}, EventLog: {EVENT_LOG_AVAILABLE}, PortfolioRisk: {PORTFOLIO_RISK_AVAILABLE}, ResearchProduction: {RESEARCH_PRODUCTION_AVAILABLE}, RiskScoring: {RISK_SCORING_AVAILABLE}, CapitalAllocator: {CAPITAL_ALLOCATOR_AVAILABLE}")
     
     def analyze_market(self, symbol: str, mtf_data: Dict[str, pd.DataFrame],
                        account_balance: float, spread_pips: float = 2.0) -> Optional[TradingSignal]:
@@ -703,6 +747,18 @@ class VeteranTraderDecisionEngine:
                     return None
             except Exception as e:
                 logger.warning(f"Portfolio risk check error: {e}")
+        
+        # Priority 1: Check risk-adjusted scoring - reduce trading if performance is poor
+        if self.risk_scorer and RISK_SCORING_AVAILABLE:
+            try:
+                should_reduce, reduce_reason = should_reduce_activity()
+                if should_reduce:
+                    # Don't completely block, but log warning and increase confidence threshold
+                    logger.warning(f"[RISK SCORING] Trading reduced for {symbol}: {reduce_reason}")
+                    # Temporarily increase minimum confidence to reduce trade frequency
+                    self.min_confidence = min(0.85, self.min_confidence + 0.10)
+            except Exception as e:
+                logger.debug(f"Risk scoring check error: {e}")
         
         # Get primary timeframe data (H1 for analysis)
         primary_tf = 'H1'
@@ -1192,21 +1248,93 @@ class VeteranTraderDecisionEngine:
         )
         
         # 11. Calculate position size (proper lot sizing for Forex)
-        risk_amount = agentic_system.calculate_position_size(
-            {'confidence': confidence, 'strategy': strategy},
-            account_balance
-        )
-        # Convert risk amount to lots
-        # For Forex: 1 standard lot = 100,000 units, pip value varies by pair
-        # Simplified: risk_amount / (sl_distance_in_pips * pip_value_per_lot)
-        # For most USD pairs, pip value is ~$10 per standard lot
+        # Priority 2: Use Capital Allocator for Buffett-style position sizing if available
         pip_value_per_lot = 10.0  # USD per pip per standard lot
         sl_pips = sl_distance * 10000 if 'JPY' not in symbol else sl_distance * 100
-        position_size = risk_amount / (sl_pips * pip_value_per_lot) if sl_pips > 0 else 0
-        # Apply uncertainty governor position multiplier (reduces size when uncertain)
-        position_size *= uncertainty_position_multiplier
-        # Ensure minimum lot size of 0.01 and maximum of 1.0 for $100 account
-        position_size = max(0.01, min(position_size, 1.0))
+        
+        if self.capital_allocator and CAPITAL_ALLOCATOR_AVAILABLE:
+            try:
+                # Build signal dict for capital allocator
+                signal_dict = {
+                    'symbol': symbol,
+                    'direction': 'long' if direction == TradeDirection.LONG else 'short',
+                    'confidence': confidence,
+                    'strategy': strategy,
+                    'sl_pips': sl_pips,
+                    'rsi': rsi,
+                    'adx': adx_value,
+                    'macd_signal': macd_value,
+                    'mtf_alignment': mtf_alignment
+                }
+                
+                # Build market context for conviction scoring
+                market_context = {
+                    'regime': regime.value if hasattr(regime, 'value') else str(regime),
+                    'dxy_trend': macro_regime.get('dxy_trend', 'neutral') if macro_regime else 'neutral',
+                    'vix_level': macro_regime.get('vix_level', 'normal') if macro_regime else 'normal',
+                    'sentiment': advanced_context.get('sentiment', {}) if advanced_context else {},
+                    'positioning': {},  # Would need COT data
+                    'upcoming_events': advanced_context.get('events', []) if advanced_context else []
+                }
+                
+                # Get allocation from capital allocator
+                allocation = self.capital_allocator.calculate_allocation(
+                    signal_dict, market_context, account_balance
+                )
+                
+                # Check if allocator approves the trade
+                should_take, alloc_reason = self.capital_allocator.should_take_trade(allocation)
+                
+                if not should_take:
+                    logger.info(f"[CAPITAL ALLOCATOR] {symbol} rejected: {alloc_reason}")
+                    if cycle_id and self.event_system and EVENT_LOG_AVAILABLE:
+                        try:
+                            gate_result = GateCheckResult(
+                                gate_name="capital_allocator",
+                                passed=False,
+                                reason=alloc_reason,
+                                details={'conviction_score': allocation.conviction_score}
+                            )
+                            self.event_system.event_logger.log_gate_check(cycle_id, gate_result)
+                            self.event_system.event_logger.log_trade_decision(cycle_id, "rejected", f"Capital allocator: {alloc_reason}")
+                            self.event_system.event_logger.end_decision_cycle(cycle_id, (time.time() - start_time) * 1000)
+                        except Exception as e:
+                            logger.warning(f"Capital allocator gate logging error: {e}")
+                    return None
+                
+                # Use allocator's position size
+                position_size = allocation.recommended_size
+                
+                # Log conviction-based sizing
+                logger.info(f"[CAPITAL ALLOCATOR] {symbol} approved: conviction={allocation.conviction_score:.0f}, "
+                           f"tier={allocation.conviction_tier}, size={position_size:.2f} lots, "
+                           f"risk={allocation.risk_budget_percent:.2%}")
+                
+            except Exception as e:
+                logger.warning(f"Capital allocator error, falling back to default sizing: {e}")
+                # Fallback to original calculation
+                risk_amount = agentic_system.calculate_position_size(
+                    {'confidence': confidence, 'strategy': strategy},
+                    account_balance
+                )
+                position_size = risk_amount / (sl_pips * pip_value_per_lot) if sl_pips > 0 else 0
+                position_size *= uncertainty_position_multiplier
+                position_size = max(0.01, min(position_size, 1.0))
+        else:
+            # Original position sizing logic
+            risk_amount = agentic_system.calculate_position_size(
+                {'confidence': confidence, 'strategy': strategy},
+                account_balance
+            )
+            # Convert risk amount to lots
+            # For Forex: 1 standard lot = 100,000 units, pip value varies by pair
+            # Simplified: risk_amount / (sl_distance_in_pips * pip_value_per_lot)
+            # For most USD pairs, pip value is ~$10 per standard lot
+            position_size = risk_amount / (sl_pips * pip_value_per_lot) if sl_pips > 0 else 0
+            # Apply uncertainty governor position multiplier (reduces size when uncertain)
+            position_size *= uncertainty_position_multiplier
+            # Ensure minimum lot size of 0.01 and maximum of 1.0 for $100 account
+            position_size = max(0.01, min(position_size, 1.0))
         
         # 12. COST-AWARE TRADE GATING - Use TradeGatingSystem for comprehensive filtering
         # This checks: spread, session (London/NY), news blackouts, edge requirements, drawdown
